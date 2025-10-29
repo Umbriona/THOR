@@ -1,0 +1,63 @@
+import os
+
+
+
+rule final_output:
+    input:
+        "../../data/README"
+        
+checkpoint cluster:
+    input:
+        "../../data/annot/NOG_annotations.tsv.emapper.annotations"
+    output:
+        directory("../../data/OG_fasta")
+    conda:
+        "../../env/cluster_OG.yaml"
+    shell:
+        "./cluster_seq2OG.py --input {input} --output {output}"
+        
+rule align:
+    input:
+        "../../data/OG_fasta/{id}.fasta"
+    output:
+        ali = "../../data/OG_ali/{id}.ali",
+        dist= "../../data/OG_dist/{id}.dist"
+
+    threads: 10
+        
+    shell:
+        "clustalo -i {input} --distmat-out {output.dist} -o {output.ali} --full --use-kimura --force"
+        
+
+rule entropy:
+    input:
+        "../../data/OG_ali/{id}.ali"
+    output:
+        "../../data/Entropy/{id}.json"
+    conda:
+        "../../env/entropy.yaml"
+    shell:
+        """
+        ./get_entropy_profiles.py -i {input} -o {output}
+        
+        """
+
+def aggregate_input(wildcards):
+    '''
+    aggregate the file names of the random number of files
+    generated at the scatter step
+    '''
+    checkpoint_output = checkpoints.cluster.get(**wildcards).output[0]
+
+    return expand('../../data/Entropy/{id}.json',
+           id=glob_wildcards(os.path.join(checkpoint_output, '{id}.fasta')).id)
+
+rule summerise:
+    input:
+        aggregate_input
+    output:
+        combined = "../../data/README",
+    shell:
+        '''
+        echo {input} >> {output.combined}
+        '''
