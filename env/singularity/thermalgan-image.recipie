@@ -1,0 +1,47 @@
+Bootstrap: docker
+From: condaforge/mambaforge # nvidia/cuda:11.5.1-cudnn8-runtime-ubuntu20.04
+
+%files
+	thermal_env.yaml
+
+%post
+	apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+	build-essential \
+	cmake \
+	cuda-command-line-tools-11-0 \
+	git \
+	wget \
+	ncbi-blast+ \
+	&& rm -rf /var/lib/apt/lists/*
+	
+	cd /
+
+	# Install Miniconda package manger.
+	#wget -q -P /tmp \
+	#https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+	#&& bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda \
+	#&& rm /tmp/Miniconda3-latest-Linux-x86_64.sh
+	
+	
+	
+	export PATH=$PATH:/opt/conda/bin
+
+	mkdir -p /cephyr # make mountpoint for cephyr
+	mkdir -p /local
+	mkdir -p /apps
+	mkdir -p /usr/share/lmod/lmod
+	mkdir -p /var/hasplm
+	mkdir -p /var/opt/thinlinc
+	mkdir -p /usr/lib64
+	mkdir -p /src
+	mkdir -p /src/utils
+	mkdir -p /src/scripts
+	touch /usr/lib64/libdlfaker.so
+	touch /usr/lib64/libvglfaker.so
+	touch /usr/bin/nvidia-smi
+
+	# Install all packages from the provided spec file into the global conda env
+	#/opt/conda/bin/conda install mamba
+#	/opt/conda/bin//mamba env update --name base --file thermal_env.yaml --prune
+	/opt/conda/bin/conda env update --name base --file thermal_env.yaml --prune
+

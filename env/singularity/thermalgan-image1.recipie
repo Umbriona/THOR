@@ -1,0 +1,49 @@
+Bootstrap: localimage #localimage #docker
+From:  /apps/containers/TensorFlow/TensorFlow-2.13.0-NGC-23.09.sif #continuumio/miniconda3:4.12.0
+
+%files
+	thermal.yaml
+
+%environment
+	export LD_LIBRARY_PATH=/usr/local/cuda/extras/CUPTI/lib64:${LD_LIBRARY_PATH}
+
+
+%post
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+	build-essential \
+	cmake \
+	git \
+	wget \
+	ncbi-blast+ \
+	&& rm -rf /var/lib/apt/lists/*
+	
+	cd /
+
+	# Install Miniconda package manger.
+	#wget -q -P /tmp \
+	#https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+	#&& bash /tmp/Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda \
+	#&& rm /tmp/Miniconda3-latest-Linux-x86_64.sh
+	
+	# Install all packages from the provided spec file into the global conda env
+	# /opt/conda/bin/conda env update --name base --file thermal.yaml   
+	python3 -m pip install --upgrade pip
+        pip install biopython
+	pip install pandas
+	#pip install tensorflow-addons==0.13.0
+	#pip install tensorflow==2.13
+	pip install protobuf==3.20
+	pip install tensorflow-probability==0.11.0
+	pip install PyYAML
+	pip install tifffile==2021.8.8
+	pip install typeguard==2.12.1            
+	pip install matplotlib
+	pip install scikit-learn
+	pip install simple_pid
+	pip install tensorboard-plugin-profile==2.13.0
+
+                        #/opt/conda/bin/conda install -y --file thermal_env.yaml
+                       # /opt/conda/bin/conda install -c bioconda biopython
+                       # /opt/conda/bin/conda install -c conda-forge pandas
+                        #/opt/conda/bin/conda install python
+                        #/opt/conda/bin/conda install -c conda-forge pyyaml

@@ -1,0 +1,87 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+%labels
+    Author your_name
+    Purpose ESM-1v masked-LM fine-tuning (HF Trainer + Accelerate)
+    Base pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+
+%environment
+    # Ensure conda/py are on PATH (present in this base image)
+    export PATH=/opt/conda/bin:$PATH
+    # Make HF caches configurable & default them to /workspace/.cache
+    export HF_HOME=/workspace/.cache/huggingface
+    export HF_DATASETS_CACHE=$HF_HOME/datasets
+    export TRANSFORMERS_CACHE=$HF_HOME/transformers
+    export TORCH_HOME=/workspace/.cache/torch
+    # Helpful defaults for containers
+    export TOKENIZERS_PARALLELISM=false
+    export PYTHONUNBUFFERED=1
+    # Safer allocator settings for large models
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+    export TF_CPP_MIN_LOG_LEVEL=1
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # Minimal but useful tools + git-lfs for huggingface model pulls (optional)
+    apt-get install -y --no-install-recommends \
+        git git-lfs wget curl ca-certificates openssh-client \
+        build-essential pkg-config \
+        libaio1 libglib2.0-0
+    rm -rf /var/lib/apt/lists/*
+
+    # Create workspace & caches
+    mkdir -p /workspace /workspace/.cache/huggingface /workspace/.cache/torch
+    chown -R root:root /workspace
+
+    # Ensure pip is recent
+    /opt/conda/bin/python -m pip install --upgrade --no-cache-dir pip
+
+    # Core Python stack (pin to stable, CUDA-compatible builds)
+    # - transformers includes ESM-1v
+    # - accelerate >= 0.21.0 (we install a newer stable)
+    # - datasets/evaluate for data + metrics
+    # - tensorboard for optional logging
+    /opt/conda/bin/pip install --no-cache-dir \
+        "transformers==4.44.2" \
+        "accelerate==0.33.0" \
+        "datasets>=2.20.0" \
+        "evaluate>=0.4.2" \
+        "tensorboard>=2.14.0" \
+        "scikit-learn>=1.3.0" \
+        "rich>=13.7.0" \
+        "tqdm>=4.66.0" \
+        "numpy>=1.26.0" \
+        "pandas>=2.1.0"
+
+    # Optional (nice to have)
+    /opt/conda/bin/pip install --no-cache-dir \
+        "pyfaidx>=0.8.1" "biopython>=1.83"
+
+    # TensorFlow (CPU-only is sufficient for TFRecord writing)
+    /opt/conda/bin/pip install --no-cache-dir "tensorflow-cpu==2.17.*"
+
+    # Verify imports (fail early during build if something is off)
+    /opt/conda/bin/python - <<'PY'
+import torch, transformers, accelerate, datasets, tensorflow as tf
+print("Torch:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+print("Transformers:", transformers.__version__)
+print("Accelerate:", accelerate.__version__)
+print("Datasets:", datasets.__version__)
+print("TensorFlow:", tf.__version__)
+# sanity: TF can serialize a small tensor (what your TFRecord writer uses)
+x = tf.constant([[1.0,2.0],[3.0,4.0]], dtype=tf.float32)
+ser = tf.io.serialize_tensor(x).numpy()
+print("TF serialize_tensor bytes:", len(ser))
+PY
+
+
+
+%runscript
+    # Default entry just drops you into bash; your sbatch will call torchrun.
+    exec /bin/bash -lc "$@"
+
+

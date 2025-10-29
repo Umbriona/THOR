@@ -1,0 +1,24 @@
+Bootstrap: docker
+From: huggingface/transformers-pytorch-gpu
+
+%files
+	thermal.yaml
+
+%post
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+	build-essential \
+	cmake \
+	git \
+	wget \
+	ncbi-blast+ \
+	&& rm -rf /var/lib/apt/lists/*
+	
+	cd /
+
+  
+	python3 -m pip install --upgrade pip
+    pip install biopython
+	pip install pandas           
+    pip install tqdm
+    pip install h5py
+	

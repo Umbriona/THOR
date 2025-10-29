@@ -1,0 +1,14 @@
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - pandas
+  - biopython
+  - pyyaml
+  - mamba
+  - pip:
+    - tensorflow-addons==0.13.0
+    - tensorflow-probability==0.11.0
+    - tifffile==2021.8.8
+    - typeguard==2.12.1

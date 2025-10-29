@@ -1,0 +1,32 @@
+Bootstrap: docker
+From: continuumio/miniconda3:4.12.0
+
+%files
+	thermal2.yaml
+
+%post
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+	build-essential \
+	cmake \
+	git \
+	wget \
+	ncbi-blast+ \
+	&& rm -rf /var/lib/apt/lists/*
+	
+	cd /
+
+	# Install Miniconda package manger.
+	# Install all packages from the provided spec file into the global conda env
+#         /opt/conda/bin/conda install -c conda-forge  mamba
+	 /opt/conda/bin/conda env update --name base --file thermal2.yaml 
+   
+                    
+
+
+
+
+                        #/opt/conda/bin/conda install -y --file thermal_env.yaml
+                       # /opt/conda/bin/conda install -c bioconda biopython
+                       # /opt/conda/bin/conda install -c conda-forge pandas
+                        #/opt/conda/bin/conda install python
+                        #/opt/conda/bin/conda install -c conda-forge pyyaml
