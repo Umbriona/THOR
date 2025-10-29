@@ -1,0 +1,153 @@
+import os
+import re
+
+LINK1="https://zenodo.org/record/2539114/files/brenda_sequences_20180109.fasta"
+LINK2="https://zenodo.org/record/2539114/files/enzyme_ogt_topt.tsv"
+
+# Paths are specific to OX system
+
+DIR_RAW="/vault/ThermalGAN/data/raw/" 
+DIR_CLEAN="../../data/clean"
+DIR_OGT="../../data/OGT_Classes"
+DIR_ANNOT="../../data/annot"
+
+PATH_EMAPPER = "/mnt/SSD1/"
+
+N_BINS = 5
+
+regex = re.compile(r'ogt_class_.')
+
+rule all:
+    input:
+        os.path.join(DIR_ANNOT, "NOG_annotations.tsv")
+        
+################################################## Fasta splitting ###########################################################
+
+#TODO
+######################################### Making Experiment data directory ###################################################
+
+#TODO
+rule make_records_ThermalGAN:
+    output:
+        ../../../data/processed/{sprint}/{experiment}/Records/README.md
+    input:
+        ../../../data/processed/{sprint}/{experiment}/TrainingSet/train_meso.fasta,
+        ../../../data/processed/{sprint}/{experiment}/TrainingSet/train_target.fasta
+        
+    shell:
+        python make_record_ThermalGAN.py -i {input} -o {output}
+        
+rule make_TestSet_ThermalGAN:
+    output:
+        
+    input:
+        ../../../config/{sprint}/{experiment}.yaml
+    shell:
+        python 
+        
+rule make_TrainingSet_ThermalGAN:
+    output:
+        ../../../data/processed/{sprint}/{experiment}/TrainingSet/README.md,
+        ../../../data/processed/{sprint}/{experiment}/TrainingSet/train_meso.fasta,
+        ../../../data/processed/{sprint}/{experiment}/TrainingSet/train_target.fasta
+    input:
+        ../../../config/{sprint}/{experiment}.yaml
+    shell:
+        python 
+
+rule make_experiment_ThermalGAN
+    output:
+        ../../../data/processed/{sprint}/{experiment}/README.md
+    input:
+        ../../../data/processed/{sprint}/{experiment}/TestSet/README.md
+        ../../../data/processed/{sprint}/{experiment}/TrainingSet/README.md
+        ../../../data/processed/{sprint}/{experiment}/Records/README.md
+    shell:
+        python make_experiment.py -i {input} -o {output}
+        
+
+############################################# Sprint specific Data generation #################################################
+        
+rule EE_22_10_10_data:
+    output:
+        ../../../data/processed/EE_22_10_10/README.md
+    input:
+        expand("../../../data/processed/EE_22_10_10/Experiment_{experiment}/README.md", )
+    conda:
+        "../../../env/data_prep.yaml"
+    shell:
+        python make_sprint.py -i {input}
+    
+################################################### Initial data cleaning #####################################################
+
+## TODO: remake to contein all new preparation and project structure..
+    
+rule download_seqences:
+    output: 
+        os.path.join(DIR_RAW, "brenda_sequences_20180109.fasta")
+
+    shell: 
+        "wget -O {output} %s" % (LINK1)
+        
+
+rule download_ogt_ref:
+    output:
+        os.path.join(DIR_RAW, "enzyme_ogt_topt.tsv")
+        
+    shell:
+        "wget -O {output} %s" % (LINK2)
+        
+        
+rule cleane_sequences:
+    output:
+        os.path.join(DIR_CLEAN, "cleaned_brenda_sequences.fasta")
+    input:
+        os.path.join(DIR_RAW, "brenda_sequences_20180109.fasta"),
+        os.path.join(DIR_RAW, "enzyme_ogt_topt.tsv")
+    conda:
+        "../../env/data_process.yaml"
+    shell:
+        "./data_clean.py -o {output} --max_length 512 --min_length 100 {input}"
+        
+        
+rule clusterd_sequences:
+    output:
+        os.path.join(DIR_CLEAN, "OGT_sequences.fasta")
+    input:
+        os.path.join(DIR_CLEAN, "cleaned_brenda_sequences.fasta")
+    conda:
+        "../../env/cluster.yaml"
+    shell:
+        "cd-hit -i {input} -c 0.95 -o {output} -M 0 -T 10"
+        
+        
+rule uniform_distrib:
+    output:
+        expand('%s/ogt_class_{num}' % DIR_OGT, num=[i for i in range(N_BINS)])
+    input:
+        os.path.join(DIR_CLEAN, "OGT_sequences.fasta")
+    conda:
+        "../../env/uniform.yaml"
+    threads: 8
+    shell:
+        "./uniform_distribution.py -i {input} -o {output} -T 5 --n_bins %i" % N_BINS
+
+
+rule cat_all:
+    output:
+        os.path.join(DIR_OGT, "ogt_all.fasta")
+    input:
+        expand("%s/{file}" % (DIR_OGT), file = list(filter(regex.match, os.listdir(DIR_OGT))))
+    shell:
+        "cat {input} > {output}"
+   
+rule annotating_all:
+    output:
+        os.path.join(DIR_ANNOT, "NOG_annotations.tsv")
+    input:
+        os.path.join(DIR_OGT, "ogt_all.fasta")
+    conda:
+        "../../env/eggnog.yaml"
+    shell:
+        " /mnt/SSD1/EggNog/eggnog-mapper/emapper.py -m diamond --itype proteins -i {input} -o {output} --cpu 10"
+        
