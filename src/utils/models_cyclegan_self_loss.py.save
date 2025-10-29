@@ -1,0 +1,566 @@
+import os
+import numpy as np
+import tensorflow as tf
+import tensorflow_addons as tfa
+from tensorflow.keras import Model
+from tensorflow.keras.layers import Conv1D, Dense, Flatten, Activation, Embedding, Input, LeakyReLU, LayerNormalization, BatchNormalization, Softmax, Dropout, Concatenate
+from utils.layers_new import  SelfAttentionSN, GumbelSoftmax, SpectralNormalization
+from utils.layers_residual import ResModPreAct
+from utils import models_generator as models_gen
+from utils import models_discriminator as models_dis
+from utils import preprocessing as pre
+from utils import models_gan_atte as gan
+
+class CycleGan(tf.keras.Model):
+
+    def __init__(self, config, callbacks=None, name = "gan", classifier=None):
+        super(CycleGan, self).__init__(name = name)
+        #self.G, self.F, self.D_x, self.D_y = self.load_models(config['CycleGan'])
+        
+        self.G = gan.Generator()
+        self.F = gan.Generator()
+        self.D_x = gan.Discriminator()
+        self.D_y = gan.Discriminator()
+        
+        # Build models
+       # inp = Input(shape=(512,21))
+       # output_G = self.G(inp)
+       # output_F = self.F(inp)
+       # output_Dx = self.D_x(inp)
+       # output_Dy = self.D_y(inp)
+        
+        # Build summary
+        self.G.summary()
+        self.F.summary()
+        self.D_x.summary()
+        self.D_y.summary()
+        
+
+        self.lambda_cycle_G = tf.Variable(config['CycleGan']['lambda_cycle'], dtype=tf.float32, trainable=False)
+        self.lambda_id_G    = tf.Variable(config['CycleGan']['lambda_id'], dtype=tf.float32, trainable=False) 
+        self.lambda_cycle_F = tf.Variable(config['CycleGan']['lambda_cycle'], dtype=tf.float32, trainable=False)
+        self.lambda_id_F    = tf.Variable(config['CycleGan']['lambda_id'], dtype=tf.float32, trainable=False) 
+        self.lambda_self_G  = tf.Variable(0, dtype=tf.float32, trainable=False) 
+        self.lambda_self_F  = tf.Variable(0, dtype=tf.float32, trainable=False) 
+        
+        self.add  = tf.keras.layers.Add()
+        
+        self.classifier = classifier
+        
+    def compile( self, loss_obj, optimizers):
+        super(CycleGan, self).compile()
+        
+        #self.gen_G_optimizer = optimizers['opt_G']
+        self.G.compile(optimizer = optimizers['opt_G'])
+        #self.gen_F_optimizer = optimizers['opt_F']
+        self.F.compile(optimizer = optimizers['opt_F'])
+        #self.disc_X_optimizer = optimizers['opt_D_x']
+        self.D_x.compile(optimizer = optimizers['opt_D_x'])
+        #self.disc_Y_optimizer = optimizers['opt_D_y']
+        self.D_y.compile(optimizer = optimizers['opt_D_y'])
+        
+        self.generator_loss_fn = loss_obj.generator_loss_fn
+        self.discriminator_loss_fn = loss_obj.discriminator_loss_fn
+        self.cycle_loss_fn = loss_obj.cycle_loss_fn
+        self.id_loss_fn = loss_obj.identity_loss_fn
+        self.self_loss_fn = loss_obj.self_loss_fn
+        
+    def load_models(self, config):
+        """Create all models that is used in cycle gan""" 
+
+        if config["Losses"]["loss"] == 'Non-Reducing':
+            D_activation = 'sigmoid'
+        else:
+            D_activation = 'linear'
+
+        vocab = config["Vocab_size"] 
+        
+        G    = models_gen.get_generator(config["Generator"], vocab)
+        F    = models_gen.get_generator(config["Generator"], vocab)
+        D_x  = models_dis.get_discriminator(config["Discriminator"], vocab, activation=D_activation)
+        D_y  = models_dis.get_discriminator(config["Discriminator"], vocab, activation=D_activation)
+
+        #G    = models_gen.Generator_res(config["Generator"], vocab, name = "Generator_thermo")
+        #F    = models_gen.Generator_res(config["Generator"], vocab, name = "Generator_meso") 
+        #D_x  = models_dis.Discriminator(config["Discriminator"], vocab, activation = D_activation, name = "Discriminator_thermo")
+        #D_y  = models_dis.Discriminator(config["Discriminator"], vocab, activation = D_activation, name = "Discriminator_meso")
+
+        return G, F, D_x, D_y
+    
+    def gradient_penalty(self, fake_y, Y_bin, fake_x, X_bin):
+        """ Calculates the gradient penalty.
+
+        This loss is calculated on an interpolated image
+        and added to the discriminator loss.
+        """
+        alpha_meso = tf.random.normal([32, 1, 1], 0.0, 1.0)
+        alpha_thermo = tf.random.normal([32, 1, 1], 0.0, 1.0)
+        
+        diff_meso = fake_y - Y_bin
+        diff_thermo = fake_x - X_bin
+        
+        interpolated_meso = Y_bin + alpha_meso * diff_meso
+        interpolated_thermo = X_bin + alpha_thermo * diff_thermo
+        
+        # 1. Get the discriminator output for this interpolated image.
+        with tf.GradientTape() as gp_tape_y:
+            gp_tape_y.watch(interpolated_meso)
+            pred_y = self.D_y(interpolated_meso, training=True)
+            
+        with tf.GradientTape() as gp_tape_x:
+            gp_tape_x.watch(interpolated_thermo)
+            pred_x = self.D_x(interpolated_thermo, training=True)
+            
+        # 2. Calculate the gradients w.r.t to this interpolated image.
+        grads_y = gp_tape_y.gradient(pred_y, [interpolated_meso])[0]
+        grads_x = gp_tape_x.gradient(pred_x, [interpolated_thermo])[0]
+        
+        # 3. Calculate the norm of the gradients.
+        norm_y = tf.sqrt(tf.reduce_sum(tf.square(grads_y), axis=[1, 2]))
+        norm_x = tf.sqrt(tf.reduce_sum(tf.square(grads_x), axis=[1, 2]))
+        gp_y = tf.reduce_mean((norm_y - 1.0) ** 2)
+        gp_x = tf.reduce_mean((norm_x - 1.0) ** 2)
+        return gp_y, gp_x
+
+    def R1_penalty(self, real_x, W_x, real_y, W_y):
+    	
+        with tf.GradientTape() as r1_tape_x:
+            r1_tape_x.watch(real_x)
+            disc_real_x = self.D_x(real_x, training=True)
+
+        with tf.GradientTape() as r1_tape_y:
+            r1_tape_y.watch(real_y)
+            disc_real_y = self.D_y(real_y, training=True)
+
+        grads_x = r1_tape_x.gradient(disc_real_x, [real_x])
+        grads_y = r1_tape_y.gradient(disc_real_y, [real_y])
+
+        grads_x = tf.math.multiply(grads_x, W_x)
+        grads_y = tf.math.multiply(grads_y, W_y)
+
+        norm_x = tf.reduce_sum(tf.square(grads_x), axis=[1, 2])
+        norm_y = tf.reduce_sum(tf.square(grads_y), axis=[1, 2])
+
+        #print(f"grads: {grads_x}")
+        #print(f"reduce_sum: {tf.reduce_sum(tf.square(grads_x), axis=[1, 2])}")
+        #print(f"reduce_sqrt: {tf.sqrt(tf.reduce_sum(tf.square(grads_x), axis=[1, 2]))}")
+        #exit()
+        return tf.reduce_mean(norm_x), tf.reduce_mean(norm_y)
+
+    @tf.function
+    def train_step_gp(self, batch_data):
+
+        with tf.GradientTape(persistent=True) as tape:
+            real_x, _, W_x = batch_data[0]
+            real_y, _, W_y= batch_data[1]
+            
+            # Calculate masks to perserve padding in fake sequences shape (None, 512, 1) -> (None, 512, 21)
+            mask_x = tf.repeat(W_x, 21, axis=-1)
+            mask_y = tf.repeat(W_y, 21, axis=-1)
+            
+            fake_y = self.G(real_x, training=True)   # G:x -> y'
+            fake_y = tf.math.multiply(fake_y, mask_x) # Preserve padding
+            cycled_x = self.F(fake_y, training=True) # Cycle: F:y' -> x
+            
+            fake_x = self.F(real_y, training=True)   # F:y -> x'
+            fake_x = tf.math.multiply(fake_x, mask_y) ##Apply mask
+            cycled_y = self.G(fake_x, training=True) # Cycle: G:x' -> y        
+
+            # Identity mapping
+            same_x = self.F(real_x, training=True)  #F:x -> x
+            same_y = self.G(real_y, training=True)  #G:y -> y
+            
+            disc_real_x = self.D_x(real_x, training=True)
+            disc_real_y = self.D_y(real_y, training=True)
+            
+            disc_fake_x = self.D_x(fake_x, training=True)
+            disc_fake_y = self.D_y(fake_y, training=True)
+
+            gen_G_loss = self.generator_loss_fn(disc_fake_y)
+            gen_F_loss = self.generator_loss_fn(disc_fake_x)
+
+            id_G_loss = self.id_loss_fn(real_y, same_y, W_y)  * self.lambda_cycle_G * self.lambda_id_G
+            id_F_loss = self.id_loss_fn(real_x, same_x, W_x)  * self.lambda_cycle_G * self.lambda_id_F
+            
+            cycle_G_loss = self.cycle_loss_fn(real_y, cycled_y, W_y)  * self.lambda_cycle_G 
+            cycle_F_loss = self.cycle_loss_fn(real_x, cycled_x, W_x)  * self.lambda_cycle_G 
+            cycle_tot_loss= cycle_G_loss + cycle_F_loss
+
+            # Generator total loss
+            tot_loss_G = gen_G_loss  + cycle_tot_loss  + id_G_loss 
+            tot_loss_F = gen_F_loss  + cycle_tot_loss  + id_F_loss 
+            
+            # Discriminator loss
+            gp_y, gp_x = self.gradient_penalty(fake_y, real_y, fake_x, real_x)
+            #print("gp_y", gp_y)
+            #print("gp_x", gp_x)
+            loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y) + gp_y * 10
+            loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x) + gp_x * 10
+            
+            #print("disc_real x", disc_real_x)
+            #print("disc_fake x", disc_fake_x)
+            #print("disc_real y", disc_real_y)
+            #print("disc_fake y", disc_fake_y)
+            #print('total loss D_X', loss_D_x)
+            #print('total loss D_Y', loss_D_y)
+            
+            
+        grads_G_gen = tape.gradient(tot_loss_G, self.G.trainable_variables)
+        grads_F_gen = tape.gradient(tot_loss_F, self.F.trainable_variables)
+        
+        # Get the gradients for the discriminators
+        grads_disc_y = tape.gradient(loss_D_y, self.D_y.trainable_variables)
+        grads_disc_x = tape.gradient(loss_D_x, self.D_x.trainable_variables)
+
+        # Update the weights of the generators 
+        #self.gen_G_optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables))
+        self.G.optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables)) 
+        #self.gen_F_optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+        self.F.optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+        
+
+        # Update the weights of the discriminators
+        #self.disc_Y_optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
+        self.D_y.optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
+        #self.disc_X_optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
+        self.D_x.optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
+
+        return {
+            "Gen_G_loss": gen_G_loss,
+            "Cycle_X_loss": cycle_G_loss,
+            "Id_X_loss": id_G_loss,
+            "Disc_X_loss": loss_D_x,
+            "Gen_F_loss": gen_F_loss,
+            "Cycle_Y_loss": cycle_F_loss,
+            "Id_Y_loss": id_F_loss,
+            "Disc_Y_loss": loss_D_y
+        }, ((fake_y, fake_x),(cycled_x, cycled_y), (same_x, same_y))
+
+    @tf.function
+    def train_step_bert(self, batch_data):
+
+        with tf.GradientTape(persistent=True) as tape:
+            real_x, _, bert_prob_x, _, W_x = batch_data[0]
+            real_y, _, bert_prob_y, _, W_y= batch_data[1]
+#            W_x = tf.ones_like(W_x)
+#            W_y = tf.ones_like(W_y)
+            # Calculate masks to perserve padding in fake sequences shape (None, 512, 1) -> (None, 512, 21)
+            mask_x = tf.repeat(W_x, 21, axis=-1)
+            mask_y = tf.repeat(W_y, 21, axis=-1)
+
+            fake_y_tmp = self.G(tf.math.add(real_x, bert_prob_x), training=True)   # G:x -> y'
+            fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
+            cycled_x = self.F(tf.math.add(fake_y, bert_prob_x), training=True) # Cycle: F:y' -> x
+            
+            fake_x_tmp = self.F(real_y, training=True)   # F:y -> x'
+            fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
+            cycled_y = self.G(fake_x, training=True) # Cycle: G:x' -> y        
+
+            # Identity mapping
+            same_x = self.F(real_x, training=True)  #F:x -> x
+            same_y = self.G(real_y, training=True)  #G:y -> y
+            
+            disc_real_x = self.D_x(real_x, training=True)
+            disc_real_y = self.D_y(real_y, training=True)
+            
+            disc_fake_x = self.D_x(fake_x, training=True)
+            disc_fake_y = self.D_y(fake_y, training=True)
+
+            gen_G_loss = self.generator_loss_fn(disc_fake_y)
+            gen_F_loss = self.generator_loss_fn(disc_fake_x)
+
+            id_G_loss = self.id_loss_fn(real_y, same_y, W_y)  * self.lambda_cycle_G * self.lambda_id_G
+            id_F_loss = self.id_loss_fn(real_x, same_x, W_x)  * self.lambda_cycle_G * self.lambda_id_F
+            
+            cycle_G_loss = self.cycle_loss_fn(real_y, cycled_y, W_y)  * self.lambda_cycle_G 
+            cycle_F_loss = self.cycle_loss_fn(real_x, cycled_x, W_x)  * self.lambda_cycle_G 
+#            cycle_tot_loss= cycle_G_loss + cycle_F_loss
+            
+            self_G_loss = self.self_loss_fn(real_x, fake_y_tmp, W_x) * self.lambda_self_G
+            self_F_loss = self.self_loss_fn(real_y, fake_x_tmp, W_y) * self.lambda_self_F
+            
+#            r1_x, r1_y = self.R1_penalty(real_x, mask_x, real_y, mask_y)
+
+            # Generator total loss
+            tot_loss_G = gen_G_loss  + cycle_G_loss  + id_G_loss + self_G_loss
+            tot_loss_F = gen_F_loss  + cycle_F_loss  + id_F_loss + self_F_loss
+            
+            loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y) #+ r1_y * 0.05
+            loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x) #+ r1_x * 0.05
+            
+            #print("disc_real x", disc_real_x)
+            #print("disc_fake x", disc_fake_x)
+            #print("disc_real y", disc_real_y)
+            #print("disc_fake y", disc_fake_y)
+            #print('total loss D_X', loss_D_x)
+            #print('total loss D_Y', loss_D_y)
+            #print("shape msak x", tf.shape(mask_x))
+            #print("shape msak y", tf.shape(mask_y))
+                   
+        grads_G_gen = tape.gradient(tot_loss_G, self.G.trainable_variables)
+        grads_F_gen = tape.gradient(tot_loss_F, self.F.trainable_variables)
+
+        # Get the gradients for the discriminators
+        grads_disc_y = tape.gradient(loss_D_y, self.D_y.trainable_variables)
+        grads_disc_x = tape.gradient(loss_D_x, self.D_x.trainable_variables)
+
+        # Update the weights of the generators 
+        #self.gen_G_optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables))
+        self.G.optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables)) 
+        #self.gen_F_optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+        self.F.optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+        
+
+        # Update the weights of the discriminators
+        #self.disc_Y_optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
+        self.D_y.optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
+        #self.disc_X_optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
+        self.D_x.optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
+
+        return {
+            "Gen_G_loss": gen_G_loss,
+            "Cycle_X_loss": cycle_G_loss,
+            "Id_X_loss": id_G_loss,
+            "Disc_X_loss": loss_D_x,
+            "Gen_F_loss": gen_F_loss,
+            "Cycle_Y_loss": cycle_F_loss,
+            "Id_Y_loss": id_F_loss,
+            "Disc_Y_loss": loss_D_y,
+            "slef_G_loss": self_G_loss,
+            "self_F_loss": self_F_loss
+        }, ((fake_y, fake_x),(cycled_x, cycled_y), (same_x, same_y))
+    
+
+    
+    @tf.function
+    def train_step(self, batch_data):
+
+        with tf.GradientTape(persistent=True) as tape:
+            real_x, _, W_x = batch_data[0]
+            real_y, _, W_y= batch_data[1]
+#            W_x = tf.ones_like(W_x)
+#            W_y = tf.ones_like(W_y)
+            # Calculate masks to perserve padding in fake sequences shape (None, 512, 1) -> (None, 512, 21)
+            mask_x = tf.repeat(W_x, 21, axis=-1)
+            mask_y = tf.repeat(W_y, 21, axis=-1)
+            
+            fake_y_tmp = self.G(real_x, training=True)   # G:x -> y'
+            fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
+            cycled_x = self.F(fake_y, training=True) # Cycle: F:y' -> x
+            
+            fake_x_tmp = self.F(real_y, training=True)   # F:y -> x'
+            fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
+            cycled_y = self.G(fake_x, training=True) # Cycle: G:x' -> y        
+
+            # Identity mapping
+            same_x = self.F(real_x, training=True)  #F:x -> x
+            same_y = self.G(real_y, training=True)  #G:y -> y
+            
+            disc_real_x = self.D_x(real_x, training=True)
+            disc_real_y = self.D_y(real_y, training=True)
+            
+            disc_fake_x = self.D_x(fake_x, training=True)
+            disc_fake_y = self.D_y(fake_y, training=True)
+
+            gen_G_loss = self.generator_loss_fn(disc_fake_y)
+            gen_F_loss = self.generator_loss_fn(disc_fake_x)
+
+            id_G_loss = self.id_loss_fn(real_y, same_y, W_y)  * self.lambda_cycle_G * self.lambda_id_G
+            id_F_loss = self.id_loss_fn(real_x, same_x, W_x)  * self.lambda_cycle_G * self.lambda_id_F
+            
+            cycle_G_loss = self.cycle_loss_fn(real_y, cycled_y, W_y)  * self.lambda_cycle_G 
+            cycle_F_loss = self.cycle_loss_fn(real_x, cycled_x, W_x)  * self.lambda_cycle_G 
+#            cycle_tot_loss= cycle_G_loss + cycle_F_loss
+            
+            self_G_loss = self.self_loss_fn(real_x, fake_y_tmp, W_x) * self.lambda_self_G
+            self_F_loss = self.self_loss_fn(real_y, fake_x_tmp, W_y) * self.lambda_self_F
+            
+#            r1_x, r1_y = self.R1_penalty(real_x, mask_x, real_y, mask_y)
+
+            # Generator total loss
+            tot_loss_G = gen_G_loss  + cycle_G_loss  + id_G_loss + self_G_loss
+            tot_loss_F = gen_F_loss  + cycle_F_loss  + id_F_loss + self_F_loss
+            
+            loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y) #+ r1_y * 0.05
+            loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x) #+ r1_x * 0.05
+            
+            #print("disc_real x", disc_real_x)
+            #print("disc_fake x", disc_fake_x)
+            #print("disc_real y", disc_real_y)
+            #print("disc_fake y", disc_fake_y)
+            #print('total loss D_X', loss_D_x)
+            #print('total loss D_Y', loss_D_y)
+            #print("shape msak x", tf.shape(mask_x))
+            #print("shape msak y", tf.shape(mask_y))
+                   
+        grads_G_gen = tape.gradient(tot_loss_G, self.G.trainable_variables)
+        grads_F_gen = tape.gradient(tot_loss_F, self.F.trainable_variables)
+
+        # Get the gradients for the discriminators
+        grads_disc_y = tape.gradient(loss_D_y, self.D_y.trainable_variables)
+        grads_disc_x = tape.gradient(loss_D_x, self.D_x.trainable_variables)
+
+        # Update the weights of the generators 
+        #self.gen_G_optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables))
+        self.G.optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables)) 
+        #self.gen_F_optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+        self.F.optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+        
+
+        # Update the weights of the discriminators
+        #self.disc_Y_optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
+        self.D_y.optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
+        #self.disc_X_optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
+        self.D_x.optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
+
+        return {
+            "Gen_G_loss": gen_G_loss,
+            "Cycle_X_loss": cycle_G_loss,
+            "Id_X_loss": id_G_loss,
+            "Disc_X_loss": loss_D_x,
+            "Gen_F_loss": gen_F_loss,
+            "Cycle_Y_loss": cycle_F_loss,
+            "Id_Y_loss": id_F_loss,
+            "Disc_Y_loss": loss_D_y,
+            "slef_G_loss": self_G_loss,
+            "self_F_loss": self_F_loss
+        }, ((fake_y, fake_x),(cycled_x, cycled_y), (same_x, same_y))
+    
+    @tf.function
+    def validate_step(self, x):#batch_data):
+        #X_bin, _, W_x= batch_data[0]
+        #Y_bin, _, W_y= batch_data[1]
+        
+        #shape = tf.shape(X_bin)
+        
+        #logit_x = self.G(X_bin)
+
+        #W_x = tf.reshape(W_x, shape=(shape[0],shape[1],1))
+        #W_x = tf.repeat(W_x, repeats=21, axis=2)
+        #trans_x = tf.math.multiply(W_x, logit_x)
+        #temp_real_x  = self.classifier(X_bin)
+        #temp_fake_x = self.classifier(trans_x)
+        #diff = tf.math.reduce_mean(tf.math.subtract(temp_real_x, temp_fake_x))
+        #diff_x = diff
+        
+        #logit_y = self.F(Y_bin)
+        #W_y = tf.reshape(W_y, shape=(shape[0],shape[1],1))
+        #W_y = tf.repeat(W_y, repeats=21, axis=2)
+        #trans_y = tf.math.multiply(W_y, logit_y)
+        #temp_real_y  = self.classifier(Y_bin)
+        #temp_fake_y = self.classifier(trans_y)
+        #diff = tf.math.reduce_mean(tf.math.subtract(temp_real_y, temp_fake_y))
+        #diff_y = diff
+        
+        fake_y = self.G(x[0][0])
+        fake_x = self.F(x[1][0])
+
+        # mask fakes
+        mask_x = tf.repeat(x[0][2], 21, axis=-1)
+        mask_y = tf.repeat(x[1][2], 21, axis=-1)
+
+        fake_y = tf.math.multiply(fake_y, mask_x)
+        fake_x = tf.math.multiply(fake_x, mask_y)
+
+        temp_real_x = self.classifier(x[0][0],training=False)
+        temp_fake_y = self.classifier(fake_y,training=False)
+        temp_diff_x = tf.math.subtract(temp_fake_y,temp_real_x)
+
+        temp_real_y = self.classifier(x[1][0] ,training=False)
+        temp_fake_x = self.classifier(fake_x,training=False)
+        temp_diff_y = tf.math.subtract(temp_fake_x,temp_real_y)
+
+        #if i==0:
+        #    stack_temp_diff_y = temp_diff_y
+        #    stack_temp_diff_x = temp_diff_x
+        #else:
+        #    stack_temp_diff_y = tf.concat([stack_temp_diff_y, temp_diff_y], axis=0)
+        #    stack_temp_diff_x = tf.concat([stack_temp_diff_x, temp_diff_x], axis=0)
+        
+        return temp_diff_y, temp_diff_x#diff_x, diff_y
+    
+    def validate_step_old(self, val_x, val_y,data, step):
+        # PCA clustering to measure diversity
+        W_x = np.zeros((data['n_meso_val'],512)) #TODO
+        W_y = np.zeros((data['n_thermo_val'],512)) #TODO
+        gen_x = np.zeros((data['n_thermo_val'],512,21))
+        gen_y = np.zeros((data['n_meso_val'],512,21))
+
+        
+        for k, item in enumerate(val_x):
+            _, X_bin, w_x = item    
+            logits, _ = self.G(X_bin)
+            tmp = tf.math.argmax(logits, axis = -1).numpy()
+            gen_y[k,:,:] = logits.numpy()    
+            W_x[k,:] = w_x.numpy()
+
+        #print(data['n_meso_val'])
+        for k, item in enumerate(val_y):
+            _, Y_bin, w_y = item    
+            logits, _ = self.F(Y_bin)
+            tmp = tf.math.argmax(logits, axis = -1).numpy()
+            gen_x[k,:,:] = logits.numpy()
+            W_y[k,:] = w_y.numpy()
+
+
+        df_gen_y = zip(list(gen_y), gen_y, list(W_x))
+        df_gen_x = zip(list(gen_x), gen_x, list(W_y)) 
+
+        self.pcaobj(df_gen_y, df_gen_x, data['n_thermo_val'], data['n_meso_val'], step=step)
+
+        # Get temp dif
+        diff=0
+        for k, item in enumerate(val_x):
+            _, X_bin, W_x = item 
+            logit, _ = self.G(X_bin)
+            W_x = tf.reshape(W_x, shape=(1,512,1))
+            W_x = tf.repeat(W_x, repeats=21, axis=2)
+            trans_x = tf.math.multiply(W_x, logit)
+            logits_real  = self.classifier(X_bin)
+            logits_trans = self.classifier(trans_x)
+            diff += tf.math.reduce_mean(tf.math.subtract(logits_trans,logits_real))
+            diff_x = diff/k
+        diff=0
+        for k, item in enumerate(val_y):
+            _, Y_bin, W_y = item 
+            logit, _ = self.F(Y_bin)
+            W_y = tf.reshape(W_y, shape=(1,512,1))
+            W_y = tf.repeat(W_y, repeats=21, axis=2)
+            trans_y = tf.math.multiply(W_y, logit)
+            logits_real  = self.classifier(Y_bin)
+            logits_trans = self.classifier(trans_y)
+            diff += tf.math.reduce_mean(tf.math.subtract(logits_trans,logits_real))
+            diff_y = diff/k
+
+        return diff_x.numpy(), diff_y.numpy()
+    
+    #@tf.function
+    def generate_step(self, batch_data):
+
+        
+        X_bin, _, W_x = batch_data[0]
+        Y_bin, _, W_y= batch_data[1]
+
+        fake_y = self.G(X_bin, training=False)
+        fake_x = self.F(Y_bin, training=False)
+        seqs = []
+
+        for seq, w in zip(list(tf.math.argmax(fake_y,axis=-1).numpy()), list(W_x.numpy())):
+                #print("seq", seq)
+                #print("mask", w)
+                #print("masked seq", seq[w==1])
+                seqs.append(pre.convert_table(seq, tf.reshape(w, shape=(512,))))    
+        return seqs 
+    
+    def save_gan(self, path):
+        self.D_x.save(os.path.join(path,"discriminator_x.h5"))
+        self.D_y.save(os.path.join(path,"discriminator_y.h5"))
+        self.G.save(os.path.join(path,"generator_G.h5"))
+        self.F.save(os.path.join(path,"generator_F.h5"))
+        print(f"Saved gan model at {path}")
+    
+    def load_gan(self, file):
+        self.D_x.load_weights(file+"_discrim_x.h5")
+        self.D_y.load_weights(file+"_discrim_y.h5")
+        self.G.load_weights(file+"_generator_G.h5")
+        self.F.load_weights(file+"_generator_x.h5")
