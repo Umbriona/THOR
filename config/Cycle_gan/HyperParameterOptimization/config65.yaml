@@ -1,0 +1,99 @@
+CycleGan:
+    Vocab_size: 21
+    lambda_cycle: 5.0
+    lambda_id: 0.01
+    epochs: 500
+    batch_size: 32
+    dir: "weights/model"
+    Generator:
+        type: res
+        n_layers: 9
+        max_length: 512
+        vocab_size: 21
+        filters: [ 256, 256, 256, 256, 256, 256, 256, 256, 256]
+        kernels: [9, 9, 9, 9, 9, 9, 9, 9, 9]
+        dilations: [2, 2, 2, 2, 2, 2, 2, 2, 2]
+        strides: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+        down_sample: 2
+        use_attention: True
+        attention_loc: 8
+        use_gumbel: True
+        use_spectral_norm: False
+        norm: "Instance" # "Layer" "Batch" "Instance"
+        temperature: 1.0
+        l1: 0.0
+        l2: 0.0
+        rate: 0.2
+    Discriminator:
+        type: "res" # conv or res
+        n_layers: 9
+        max_length: 512
+        vocab_size: 21
+        filters: [64, 64, 64, 128, 128, 128, 256, 256, 256]
+        kernels: [9, 9, 9, 9, 9, 9, 9, 9, 9]
+        dilations: [2, 2, 2, 2, 2, 2, 2, 2, 2]
+        strides: [2, 1, 2, 1, 2, 1, 2, 1, 1]
+        patch: True
+        use_attention: True
+        attention_loc: 7
+        use_spectral_norm: True
+        use_gp: False
+        norm: "Instance" # "Layer" "Batch" "Instance"
+        l1: 0.0
+        l2: 0.0
+        rate: 0.2
+    Losses:
+        loss: Non-Reducing # Wasserstein #Mse #Hinge #Non-Reducing
+    Optimizers:
+        optimizer_discriminator: Adam
+        learning_rate_discriminator: 0.0002
+        beta_1_discriminator: 0.5
+        optimizer_generator: Adam
+        learning_rate_generator: 0.0001
+        beta_1_generator: 0.5         
+    Metrics:
+Classifier:
+    vocab_size: 21
+    model_type: "ResPreAct"
+    n_layers: 9
+    max_length: 512
+    filters: [64, 64, 64, 128, 128, 128, 256, 256, 256]
+    kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
+    dilations: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+    strides: [1, 2, 2, 1, 2, 2, 1, 1, 2]
+    l1: 0.0
+    l2: 0.0
+    rate: 0.2
+    use_attention: True
+    attention_loc: 5
+    use_global_pos: False
+    temporal_encode: 21
+    learning_rate: 0.0001
+    batch_size: 64
+    dir: "../weights"
+
+Data_meso:
+    max_length: 512
+    max_samples: 4000000
+    base_dir: '/data/Mesophiles'
+    train_dir: 'train/*.tfrecord'
+    val_dir: 'val/*.tfrecord'
+    n_shards: 4 # How many shards to use
+    shards: 100
+    
+Data_thermo:
+    max_length: 512
+    max_samples: 4000000
+    base_dir: '/data/Thermophiles'
+    train_dir: 'train/*.tfrecord'
+    val_dir: 'val/*.tfrecord'
+    n_shards: 4 # How many shards to use
+    shards: 100
+    
+Log:
+    base_dir: "../log"
+    img: img 
+Results:
+    base_dir: "../results"
+    
+    

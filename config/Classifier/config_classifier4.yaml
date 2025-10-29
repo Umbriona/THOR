@@ -1,0 +1,32 @@
+model: "reg"
+Classifier:
+    vocab_size: 21
+    model_type: "ResPreAct"
+    n_layers: 9
+    max_length: 512
+    filters: [64, 64, 64, 128, 128, 128, 256, 256, 256]
+    kernels: [9, 9, 9, 9, 9, 9, 9, 9, 9]
+    dilations: [2, 2, 2, 2, 2, 2, 2, 2, 2]
+    strides: [1, 2, 2, 1, 2, 2, 1, 1, 2]
+    l1: 0.0
+    l2: 0.0
+    rate: 0.2
+    use_attention: True
+    attention_loc: 5
+    use_global_pos: False
+    temporal_encode: 21
+    learning_rate: 0.0001
+    batch_size: 256
+    epochs: 100
+    down_sample: 5 # needs to be the same as the number of 2s in strides
+    norm: "Layer" # "Layer" "Batch" "Instance"
+    file: "../weights/Classifier/Model4/model13_weights.h5"
+    checkpoint_filepath: "../weights/Classifier/Model4/checkpoint"
+Data:
+    max_length: 512
+    max_samples: 4000000
+    base_dir: '/data'
+    train_dir: 'train/*.tfrecord'
+    val_dir: 'val/*.tfrecord'
+    n_shards: 100 # How many shards to use
+    shards: 100
