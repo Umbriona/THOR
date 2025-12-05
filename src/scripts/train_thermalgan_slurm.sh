@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=ThermalGAN
-#SBATCH --account=NAISS2025-22-904
+#SBATCH --account=NAISS2025-5-369
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A100:1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=2-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --output=%x.%j.out
 
 # Directory definitions

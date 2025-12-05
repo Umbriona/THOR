@@ -756,8 +756,9 @@ def save_grouped_tfrecord(grouped_iter, out_dir: str, base_name: str,
         # prepare per-record quantization mirroring pickle path
         prepped = {}
         for rid, entry in shard:
+            print(f"Saving seq: {entry['seq']}")
             rec = {
-                "seq": entry["seq"],
+                "seq": entry["seq"].replace(" ", ""),
                 "temp": float(entry["temp"]) if entry.get("temp") is not None else None,
                 "length": int(entry["length"]),
                 "quality": entry.get("quality", None),

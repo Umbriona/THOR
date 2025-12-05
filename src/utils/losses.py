@@ -33,34 +33,58 @@ class NonReduceingLoss(Loss):
         self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0)#, reduction=tf.keras.losses.Reduction.NONE)
         self.bin = tf.keras.losses.BinaryCrossentropy(from_logits=True, axis=-1)#, reduction=tf.keras.losses.Reduction.NONE)
         self.bin_d=tf.keras.losses.BinaryCrossentropy(from_logits=True, label_smoothing=0.0,axis=-1)#, reduction=tf.keras.losses.Reduction.NONE)
+        self.eps = tf.keras.backend.epsilon()
 
     def cycle_loss_fn(self, real, cycled, w=None):
         #return tf.reduce_mean(tf.abs(real - cycled))
+        real = tf.cast(real, dtype="float32")
+        cycled = tf.cast(cycled, dtype="float32")
+        w = tf.cast(w, dtype="float32")
         return self.cross( real, cycled, w)
     
     def identity_loss_fn(self, real, same, w = None):
         #loss = tf.reduce_mean(tf.abs(real - same))
+        real = tf.cast(real, dtype="float32")
+        same = tf.cast(same, dtype="float32")
+        w = tf.cast(w, dtype="float32")
         loss = self.cross( real, same, w)
         return loss
     def self_loss_fn(self, real, fake, w = None):
         #loss = tf.reduce_mean(tf.abs(real - same))
+        real = tf.cast(real, dtype="float32")
+        fake = tf.cast(fake, dtype="float32")
+        w = tf.cast(w, dtype="float32")
         loss = self.cross( real, fake, w)
         return loss
+
+    def _masked_mean(self, values, mask=None):
+        if mask is None:
+            return K.mean(values)
+        mask = tf.cast(mask, values.dtype)
+        masked_values = values * mask
+        denominator = tf.reduce_sum(mask) + self.eps
+        return tf.reduce_sum(masked_values) / denominator
     
-    def generator_loss_fn(self, fake):
+    def generator_loss_fn(self, fake, mask=None):
         #return self.bin(tf.ones_like(fake), fake)
-        return K.mean(K.softplus(-fake))#, axis=0)
+        fake = tf.cast(fake, dtype="float32")
+        mask = tf.cast(mask, dtype="float32")
+        loss = K.softplus(-fake)
+        return self._masked_mean(loss, mask)#, axis=0)
     
-    def discriminator_loss_fn(self, real, fake):
-        #L1 = tf.reduce_mean(tf.math.log(real))
+    def discriminator_loss_fn(self, real, fake, real_mask=None, fake_mask=None):
+        real = tf.cast(real, dtype="float32")
+        fake = tf.cast(fake, dtype="float32")
+        real_mask = tf.cast(real_mask, dtype="float32")
+        fake_mask = tf.cast(fake_mask, dtype="float32")
         #L2 = tf.reduce_mean(tf.math.log(tf.ones_like(fake)-fake))
-        L1 = K.mean(K.softplus(-real))#, axis=0)
-        L2 = K.mean(K.softplus(fake))#, axis=0)
+        L1 = self._masked_mean(K.softplus(-real), real_mask)#, axis=0)
+        L2 = self._masked_mean(K.softplus(fake), fake_mask)#, axis=0)
         total_disc_loss = L1+L2
         #real_loss = self.bin_d(tf.ones_like(real), real)
         #generated_loss = self.bin_d(tf.zeros_like(fake), fake)
         #total_disc_loss = real_loss + generated_loss
-        return total_disc_loss #* 0.5
+        return total_disc_loss * 0.5
     
 class HingeLoss(Loss):
     def __init__(self ):
@@ -99,5 +123,4 @@ class MSE(Loss):
         real_loss = self.mse(tf.ones_like(real), real)
         fake_loss = self.mse(tf.zeros_like(fake), fake)
         return (real_loss + fake_loss) * 0.5
-
 

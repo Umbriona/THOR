@@ -517,17 +517,17 @@ def seq_bytes_to_ids(seq_bytes, max_length=MAX_LEN, records_type="ESM"):
     return ids
 
 # -------- example parser combining all ----------
-def _compact_parse_function_bert_cycle(item, max_length=512, key="class"):
+def _compact_parse_function_bert_cycle(item, max_length=512, key="class", records_type="prot_bert"):
     f = parse_example(item)
     probs_512x21 = probs_q_to_512x21(f)          # [512,21]
-    seq_ids = seq_bytes_to_ids(f["seq"], max_length=max_length, records_type="prot_bert")
+    seq_ids = seq_bytes_to_ids(f["seq"], max_length=max_length, records_type=records_type)
     example = (
         seq_ids,                          # [L]
         f["temp"],                            # scalar float32
         probs_512x21,)                       # [L,21] float32
     return example  
 
-def load_compact_data_bert(config, data_set):
+def load_compact_data_bert(config, data_set,batch_size ):
     base_dir = config[data_set]["base_dir"]
     files_train = os.path.join(base_dir, config[data_set]["train_dir"])
     files_val = os.path.join(base_dir, config[data_set]["val_dir"])
@@ -537,17 +537,37 @@ def load_compact_data_bert(config, data_set):
     num_shards = 100
     print(f"Loading records from {files_train}\nTaking {config[data_set]['n_shards']} records")
 
-    file_names_train = tf.data.Dataset.list_files(files_train,shuffle=False) #.take(config[data_set]["n_shards"]) #.shuffle(config["n_shards"])
+    file_names_train = tf.data.Dataset.list_files(files_train,shuffle=True) #.take(config[data_set]["n_shards"]) #.shuffle(config["n_shards"])
     file_names_val = tf.data.Dataset.list_files(files_val,shuffle=False) #.shuffle(config["n_shards"])
-
-    tfdata_train = tf.data.TFRecordDataset(file_names_train, num_parallel_reads = tf.data.AUTOTUNE,compression_type="GZIP") # tf.data.AUTOTUNE file_names_train.interleave(lambda filename: tf.data.TFRecordDataset(filename), num_parallel_calls = tf.data.AUTOTUNE )
+    
+    tfdata_train = file_names_train.interleave(lambda filename: tf.data.TFRecordDataset(filename, num_parallel_reads = tf.data.AUTOTUNE, compression_type="GZIP"), num_parallel_calls = tf.data.AUTOTUNE )
+    #tfdata_train = tf.data.TFRecordDataset(file_names_train, num_parallel_reads = tf.data.AUTOTUNE,compression_type="GZIP") # tf.data.AUTOTUNE file_names_train.interleave(lambda filename: tf.data.TFRecordDataset(filename), num_parallel_calls = tf.data.AUTOTUNE )
     tfdata_val = tf.data.TFRecordDataset(file_names_val, num_parallel_reads = tf.data.AUTOTUNE, compression_type="GZIP") #file_names_val.interleave(lambda filename: tf.data.TFRecordDataset(filename), num_parallel_calls = tf.data.AUTOTUNE )
 
-    tfdata_train = tfdata_train.map(lambda x: _compact_parse_function_bert_cycle(x, max_length=max_length), num_parallel_calls = tf.data.AUTOTUNE).cache()
-    tfdata_val = tfdata_val.map(lambda x: _compact_parse_function_bert_cycle(x, max_length=max_length), num_parallel_calls = tf.data.AUTOTUNE)
+    tfdata_train = tfdata_train.map(lambda x: _compact_parse_function_bert_cycle(x, max_length=max_length, records_type=config[data_set]["records_type"]), num_parallel_calls = tf.data.AUTOTUNE)
+    tfdata_val = tfdata_val.map(lambda x: _compact_parse_function_bert_cycle(x, max_length=max_length, records_type=config[data_set]["records_type"]), num_parallel_calls = tf.data.AUTOTUNE)
     
-    tfdata_train = tfdata_train.shuffle(int(5e4), reshuffle_each_iteration=True)
+    tfdata_train = tfdata_train.shuffle(int(1e5), reshuffle_each_iteration=True).repeat().batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE)
     tfdata_val = tfdata_val
     
     return tfdata_train, tfdata_val
 
+    # -------- example parser combining all ----------
+def _compact_parse_function_thor_inference(item, max_length=512, key="class", records_type="ESM"):
+    f = parse_example(item)
+    probs_512x21 = probs_q_to_512x21(f)          # [512,21]
+    seq_ids = seq_bytes_to_ids(f["seq"], max_length=max_length, records_type=records_type)
+    example = (
+        seq_ids,                          # [L]
+        f["id"],                            # scalar float32
+        probs_512x21,)                       # [L,21] float32)                       
+    return example  
+
+def load_compact_data_bert_inference(files):
+    max_length = 512
+    print(max_length)
+    file_names = tf.data.Dataset.list_files(files, shuffle=False)
+
+    tfdata = file_names.interleave(lambda filename: tf.data.TFRecordDataset(filename, compression_type="GZIP"), num_parallel_calls = tf.data.AUTOTUNE )
+    tfdata = tfdata.map(lambda x: _compact_parse_function_thor_inference(x, max_length=max_length), num_parallel_calls = tf.data.AUTOTUNE)
+    return tfdata

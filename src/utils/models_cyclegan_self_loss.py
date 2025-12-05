@@ -11,7 +11,7 @@ from utils import models_generator as models_gen
 from utils import models_discriminator as models_dis
 from utils import preprocessing as pre
 from utils import models_gan_atte as gan
-from utils.loaders import  load_metrics
+from utils.loaders import  load_training_metrics, load_validation_metrics
 
 MAX_LEN=512
 
@@ -47,10 +47,10 @@ class CycleGan(tf.keras.Model):
         super(CycleGan, self).__init__(name = name)
         #self.G, self.F, self.D_x, self.D_y = self.load_models(config['CycleGan'])
         
-        self.G = gan.Generator()
-        self.F = gan.Generator()
-        self.D_x = gan.Discriminator()
-        self.D_y = gan.Discriminator()
+        self.G = gan.Generator(config=config['CycleGan']["Generator"])
+        self.F = gan.Generator(config=config['CycleGan']["Generator"])
+        self.D_x = gan.Discriminator(config=config['CycleGan']["Discriminator"])
+        self.D_y = gan.Discriminator(config=config['CycleGan']["Discriminator"])
         
         # Build models
        # inp = Input(shape=(512,21))
@@ -66,21 +66,22 @@ class CycleGan(tf.keras.Model):
         self.D_y.summary()
         
         self.compute_dtypee = tf.keras.mixed_precision.global_policy().compute_dtype
-        self.lambda_cycle_G = tf.Variable(config['CycleGan']['lambda_cycle'], dtype=self.compute_dtypee, trainable=False)
-        self.lambda_id_G    = tf.Variable(config['CycleGan']['lambda_id'], dtype=self.compute_dtypee, trainable=False) 
-        self.lambda_cycle_F = tf.Variable(config['CycleGan']['lambda_cycle'], dtype=self.compute_dtypee, trainable=False)
-        self.lambda_id_F    = tf.Variable(config['CycleGan']['lambda_id'], dtype=self.compute_dtypee, trainable=False) 
-        self.lambda_self_G  = tf.Variable(1, dtype=self.compute_dtypee, trainable=False) 
-        self.lambda_self_F  = tf.Variable(1, dtype=self.compute_dtypee, trainable=False) 
+        self.lambda_cycle_G = tf.Variable(config['CycleGan']['lambda_cycle'], dtype="float32", trainable=False)
+        self.lambda_id_G    = tf.Variable(config['CycleGan']['lambda_id'], dtype="float32", trainable=False) 
+        self.lambda_cycle_F = tf.Variable(config['CycleGan']['lambda_cycle'], dtype="float32", trainable=False)
+        self.lambda_id_F    = tf.Variable(config['CycleGan']['lambda_id'], dtype="float32", trainable=False) 
+        self.lambda_self_G  = tf.Variable(1, dtype="float32", trainable=False) 
+        self.lambda_self_F  = tf.Variable(1, dtype="float32", trainable=False) 
         
-        self.lambda_evo_G   = tf.Variable(config['CycleGan']['lambda_evo_G'], dtype=self.compute_dtypee, trainable=False)
-        self.lambda_evo_F   = tf.Variable(config['CycleGan']['lambda_evo_F'], dtype=self.compute_dtypee, trainable=False)
+        self.lambda_evo_G   = tf.Variable(config['CycleGan']['lambda_evo_G'], dtype="float32", trainable=False)
+        self.lambda_evo_F   = tf.Variable(config['CycleGan']['lambda_evo_F'], dtype="float32", trainable=False)
         
         self.add  = tf.keras.layers.Add()
         
         self.classifier = classifier
 
-        self.metricss = load_metrics(config['CycleGan']['Metrics'])
+        self.training_metrics = load_training_metrics()
+        self.validation_metrics = load_validation_metrics()
         
     def compile( self, loss_obj, optimizers):
         super(CycleGan, self).compile()
@@ -123,22 +124,20 @@ class CycleGan(tf.keras.Model):
         return G, F, D_x, D_y
     
     @tf.function(jit_compile=True)
-    def train_step_bert_all(self, batch_data):
+    def train_step(self, batch_data):
 
         with tf.GradientTape(persistent=True) as tape:
             real_x, _, prob_x = batch_data[0]
             real_y, _, prob_y = batch_data[1]
+
             
             ## ONE HOT cast ##
 
             W_x = tf.cast(real_x >= 0, self.compute_dtypee)            
             W_x = tf.reshape(W_x,[-1,MAX_LEN,1]) # [L,1]
 
-
             W_y = tf.cast(real_y >= 0, self.compute_dtypee)           
             W_y = tf.reshape(W_y,[-1,MAX_LEN,1]) # [L,1]
-
-
 
             real_x = tf.one_hot(real_x, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
             real_y = tf.one_hot(real_y, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
@@ -147,15 +146,13 @@ class CycleGan(tf.keras.Model):
 
             prob_x = tf.cast(prob_x, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
             prob_y = tf.cast(prob_y, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
-            prob_x = prob_x + 1/255.0
-            prob_y = prob_y + 1/255.0
 
 
             ############################
 
             # Calculate masks to perserve padding in fake sequences shape (None, 512, 1) -> (None, 512, 21)
-            mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
-            mask_y = W_y#tf.repeat(W_y, 21, axis=-1)
+            mask_x = W_x 
+            mask_y = W_y
             real_x = real_x * mask_x 
             real_y = real_y * mask_y
 
@@ -164,30 +161,30 @@ class CycleGan(tf.keras.Model):
             input_y_real = tf.math.add(real_y, prob_y)
 
 
-            fake_y_tmp, _ = self.G(input_x_real, training=True)   # G:x -> y'
+            fake_y_tmp, _ = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
 
             fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
             
             input_y_fake = tf.math.add(fake_y, prob_x)
-            _, cycled_x = self.F(input_y_fake, training=True) # Cycle: F:y' -> x
+            _, cycled_x = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
 
-            fake_x_tmp, _ = self.F(input_y_real, training=True)   # F:y -> x'
+            fake_x_tmp, _ = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
             fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
             input_x_fake = tf.math.add(fake_x, prob_y)
-            _, cycled_y = self.G(input_x_fake, training=True) # Cycle: G:x' -> y        
+            _, cycled_y = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
 
             # Identity mapping
-            _, same_x = self.F(input_x_real, training=True)  #F:x -> x
-            _, same_y = self.G(input_y_real, training=True)  #G:y -> y
+            _, same_x = self.F([input_x_real, mask_x], training=True)  #F:x -> x
+            _, same_y = self.G([input_y_real, mask_y], training=True)  #G:y -> y
             
-            disc_real_x = self.D_x(input_x_real, training=True)
-            disc_real_y = self.D_y(input_y_real, training=True)
+            disc_real_x, final_mask_x = self.D_x([input_x_real, mask_x], training=True)
+            disc_real_y, final_mask_y = self.D_y([input_y_real, mask_y], training=True)
             
-            disc_fake_x = self.D_x(input_x_fake, training=True)
-            disc_fake_y = self.D_y(input_y_fake, training=True)
+            disc_fake_x, _ = self.D_x([input_x_fake, mask_y], training=True)
+            disc_fake_y, _ = self.D_y([input_y_fake, mask_x], training=True)
 
-            gen_G_loss = self.generator_loss_fn(disc_fake_y)
-            gen_F_loss = self.generator_loss_fn(disc_fake_x)
+            gen_G_loss = self.generator_loss_fn(disc_fake_y, final_mask_x)
+            gen_F_loss = self.generator_loss_fn(disc_fake_x, final_mask_y)
             
             id_G_loss = self.id_loss_fn(real_y, same_y, W_y) * self.lambda_cycle_G * self.lambda_id_G
             id_F_loss = self.id_loss_fn(real_x, same_x, W_x) * self.lambda_cycle_F * self.lambda_id_F
@@ -198,6 +195,12 @@ class CycleGan(tf.keras.Model):
 
             W_x_self = tf.math.reduce_sum(tf.math.multiply(real_x, prob_x), axis=-1)
             W_y_self = tf.math.reduce_sum(tf.math.multiply(real_y, prob_y), axis=-1)
+
+            W_x_self = W_x_self + 1/255
+            W_y_self = W_y_self + 1/255
+
+            W_x_self = W_x_self * tf.reshape(W_x, [-1, MAX_LEN])
+            W_y_self = W_y_self * tf.reshape(W_y, [-1, MAX_LEN])
             
             self_G_loss = self.self_loss_fn(real_x, fake_y_tmp, W_x_self) * self.lambda_self_G ## Need to be _tmp (avoids nan in smx)
             self_F_loss = self.self_loss_fn(real_y, fake_x_tmp, W_y_self) * self.lambda_self_F ## Need to be _tmp (avoids nan in smx)
@@ -209,11 +212,9 @@ class CycleGan(tf.keras.Model):
             tot_loss_G = gen_G_loss  + cycle_G_loss  + evo_G_loss + self_G_loss + id_G_loss
             tot_loss_F = gen_F_loss  + cycle_F_loss  + evo_F_loss + self_F_loss + id_F_loss
 
-            loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y) 
-            loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x) 
+            loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y, real_mask=final_mask_y, fake_mask=final_mask_x) 
+            loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x, real_mask=final_mask_x, fake_mask=final_mask_y) 
 
-
-                   
         grads_G_gen = tape.gradient(tot_loss_G, self.G.trainable_variables)
         grads_F_gen = tape.gradient(tot_loss_F, self.F.trainable_variables)
 
@@ -229,39 +230,154 @@ class CycleGan(tf.keras.Model):
         self.D_y.optimizer.apply_gradients(zip(grads_disc_y, self.D_y.trainable_variables))
         self.D_x.optimizer.apply_gradients(zip(grads_disc_x, self.D_x.trainable_variables))
 
-        self.metricss['loss_G'](gen_G_loss) 
-        self.metricss['loss_cycle_x'](cycle_G_loss)
-        self.metricss['loss_disc_y'](loss_D_x)
-        self.metricss['loss_F'](gen_F_loss) 
-        self.metricss['loss_cycle_y'](cycle_F_loss)
-        self.metricss['loss_disc_x'](loss_D_y)
-        self.metricss['loss_id_x'](id_G_loss)
-        self.metricss['loss_id_y'](id_F_loss)
+        self.training_metrics['loss_G'](gen_G_loss) 
+        self.training_metrics['loss_cycle_x'](cycle_G_loss)
+        self.training_metrics['loss_disc_y'](loss_D_x)
+        self.training_metrics['loss_F'](gen_F_loss) 
+        self.training_metrics['loss_cycle_y'](cycle_F_loss)
+        self.training_metrics['loss_disc_x'](loss_D_y)
+        self.training_metrics['loss_id_x'](id_G_loss)
+        self.training_metrics['loss_id_y'](id_F_loss)
 
-        self.metricss['acc_x'](real_x, fake_y, W_x)
-        self.metricss['acc_y'](real_y, fake_x, W_y)
-        self.metricss['cycled_acc_x'](real_x, cycled_x, W_x)
-        self.metricss['cycled_acc_y'](real_y, cycled_y, W_y)
-        self.metricss['id_acc_x'](real_x, same_x, W_x)
-        self.metricss['id_acc_y'](real_y, same_y, W_y)
+        self.training_metrics['acc_x'](real_x, fake_y, W_x)
+        self.training_metrics['acc_y'](real_y, fake_x, W_y)
+        self.training_metrics['cycled_x_acc'](real_x, cycled_x, W_x)
+        self.training_metrics['cycled_y_acc'](real_y, cycled_y, W_y)
+        self.training_metrics['id_acc_x'](real_x, same_x, W_x)
+        self.training_metrics['id_acc_y'](real_y, same_y, W_y)
 
-    @tf.function
-    def validate_step_bert(self, batch_data):#batch_data):
+    @tf.function(jit_compile=True)
+    def train_step_generator(self, batch_data):
+
+        with tf.GradientTape(persistent=True) as tape:
+            real_x, _, prob_x = batch_data[0]
+            real_y, _, prob_y = batch_data[1]
+
+            
+            ## ONE HOT cast ##
+
+            W_x = tf.cast(real_x >= 0, self.compute_dtypee)            
+            W_x = tf.reshape(W_x,[-1,MAX_LEN,1]) # [L,1]
+
+            W_y = tf.cast(real_y >= 0, self.compute_dtypee)           
+            W_y = tf.reshape(W_y,[-1,MAX_LEN,1]) # [L,1]
+
+            real_x = tf.one_hot(real_x, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
+            real_y = tf.one_hot(real_y, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
+ 
+            ## q_prob ###
+
+            prob_x = tf.cast(prob_x, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
+            prob_y = tf.cast(prob_y, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
+
+
+            ############################
+
+            # Calculate masks to perserve padding in fake sequences shape (None, 512, 1) -> (None, 512, 21)
+            mask_x = W_x 
+            mask_y = W_y
+            real_x = real_x * mask_x 
+            real_y = real_y * mask_y
+
+            # Adding likelihoods to input 
+            input_x_real = tf.math.add(real_x, prob_x)
+            input_y_real = tf.math.add(real_y, prob_y)
+
+
+            fake_y_tmp, _ = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
+
+            fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
+            
+            input_y_fake = tf.math.add(fake_y, prob_x)
+            _, cycled_x = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
+
+            fake_x_tmp, _ = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
+            fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
+            input_x_fake = tf.math.add(fake_x, prob_y)
+            _, cycled_y = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
+
+            # Identity mapping
+            _, same_x = self.F([input_x_real, mask_x], training=True)  #F:x -> x
+            _, same_y = self.G([input_y_real, mask_y], training=True)  #G:y -> y
+            
+            disc_real_x, final_mask_x = self.D_x([input_x_real, mask_x], training=True)
+            disc_real_y, final_mask_y = self.D_y([input_y_real, mask_y], training=True)
+            
+            disc_fake_x, _ = self.D_x([input_x_fake, mask_y], training=True)
+            disc_fake_y, _ = self.D_y([input_y_fake, mask_x], training=True)
+
+            gen_G_loss = self.generator_loss_fn(disc_fake_y, final_mask_x)
+            gen_F_loss = self.generator_loss_fn(disc_fake_x, final_mask_y)
+            
+            id_G_loss = self.id_loss_fn(real_y, same_y, W_y) * self.lambda_cycle_G * self.lambda_id_G
+            id_F_loss = self.id_loss_fn(real_x, same_x, W_x) * self.lambda_cycle_F * self.lambda_id_F
+            
+            cycle_G_loss = self.cycle_loss_fn(real_y, cycled_y, W_y) * self.lambda_cycle_G 
+            cycle_F_loss = self.cycle_loss_fn(real_x, cycled_x, W_x) * self.lambda_cycle_F 
+            #cycle_tot_loss= cycle_G_loss + cycle_F_loss
+
+            W_x_self = tf.math.reduce_sum(tf.math.multiply(real_x, prob_x), axis=-1)
+            W_y_self = tf.math.reduce_sum(tf.math.multiply(real_y, prob_y), axis=-1)
+
+            W_x_self = W_x_self + 1/255
+            W_y_self = W_y_self + 1/255
+
+            W_x_self = W_x_self * tf.reshape(W_x, [-1, MAX_LEN])
+            W_y_self = W_y_self * tf.reshape(W_y, [-1, MAX_LEN])
+            
+            self_G_loss = self.self_loss_fn(real_x, fake_y_tmp, W_x_self) * self.lambda_self_G ## Need to be _tmp (avoids nan in smx)
+            self_F_loss = self.self_loss_fn(real_y, fake_x_tmp, W_y_self) * self.lambda_self_F ## Need to be _tmp (avoids nan in smx)
+
+            evo_G_loss = self.self_loss_fn(prob_x, fake_y_tmp, W_x) * self.lambda_evo_G ## Need to be _tmp (avoids nan in smx)
+            evo_F_loss = self.self_loss_fn(prob_y, fake_x_tmp, W_y) * self.lambda_evo_F ## Need to be _tmp (avoids nan in smx)
+
+            # Generator total loss
+            tot_loss_G = gen_G_loss  + cycle_G_loss  + evo_G_loss + self_G_loss + id_G_loss
+            tot_loss_F = gen_F_loss  + cycle_F_loss  + evo_F_loss + self_F_loss + id_F_loss
+
+            loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y, real_mask=final_mask_y, fake_mask=final_mask_x) 
+            loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x, real_mask=final_mask_x, fake_mask=final_mask_y) 
+
+        grads_G_gen = tape.gradient(tot_loss_G, self.G.trainable_variables)
+        grads_F_gen = tape.gradient(tot_loss_F, self.F.trainable_variables)
+
+        # Update the weights of the generators 
+        self.G.optimizer.apply_gradients(zip(grads_G_gen, self.G.trainable_variables)) 
+        self.F.optimizer.apply_gradients(zip(grads_F_gen, self.F.trainable_variables))
+
+        self.training_metrics['loss_G'](gen_G_loss) 
+        self.training_metrics['loss_cycle_x'](cycle_G_loss)
+        self.training_metrics['loss_disc_y'](loss_D_x)
+        self.training_metrics['loss_F'](gen_F_loss) 
+        self.training_metrics['loss_cycle_y'](cycle_F_loss)
+        self.training_metrics['loss_disc_x'](loss_D_y)
+        self.training_metrics['loss_id_x'](id_G_loss)
+        self.training_metrics['loss_id_y'](id_F_loss)
+
+        self.training_metrics['acc_x'](real_x, fake_y, W_x)
+        self.training_metrics['acc_y'](real_y, fake_x, W_y)
+        self.training_metrics['cycled_x_acc'](real_x, cycled_x, W_x)
+        self.training_metrics['cycled_y_acc'](real_y, cycled_y, W_y)
+        self.training_metrics['id_acc_x'](real_x, same_x, W_x)
+        self.training_metrics['id_acc_y'](real_y, same_y, W_y)
+
+    @tf.function(jit_compile=True)
+    def validate_step(self, batch_data):#batch_data):
         
-        real_x, _, prob_x = batch_data[0]
-        real_y, _, prob_y = batch_data[1]
+        real_x_int, _, prob_x = batch_data[0]
+        real_y_int, _, prob_y = batch_data[1]
 
 
         ## ONE HOT cast ##
 
-        W_x = tf.cast(real_x >= 0, self.compute_dtypee)            # [L,1]
+        W_x = tf.cast(real_x_int >= 0, self.compute_dtypee)            # [L,1]
         W_x = tf.reshape(W_x,[-1,MAX_LEN,1]) # [L,1]
 
-        W_y = tf.cast(real_y >= 0, self.compute_dtypee)           # [L,1]
+        W_y = tf.cast(real_y_int >= 0, self.compute_dtypee)           # [L,1]
         W_y = tf.reshape(W_y,[-1,MAX_LEN,1]) # [L,1]
 
-        real_x = tf.one_hot(real_x, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
-        real_y = tf.one_hot(real_y, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
+        real_x = tf.one_hot(real_x_int, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
+        real_y = tf.one_hot(real_y_int, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
 
 
         ## q_prob ###
@@ -276,8 +392,8 @@ class CycleGan(tf.keras.Model):
         input_x_real = tf.math.add(real_x, prob_x)
         input_y_real = tf.math.add(real_y, prob_y)
         
-        fake_y, _ = self.G(input_x_real)
-        fake_x, _ = self.F(input_y_real)
+        fake_y, _ = self.G([input_x_real, W_x], training=False)
+        fake_x, _ = self.F([input_y_real, W_y], training=False)
 
         # mask fakes
         mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
@@ -294,71 +410,165 @@ class CycleGan(tf.keras.Model):
         temp_fake_x = self.classifier(fake_x,training=False)
         temp_diff_y = tf.math.subtract(temp_fake_x,temp_real_y)
 
-        self.metricss['temp_diff_x'](temp_diff_x)
-        self.metricss['temp_diff_y'](temp_diff_y)
+        self.validation_metrics['temp_diff_x'](temp_diff_x)
+        self.validation_metrics['temp_diff_y'](temp_diff_y)
+
+        self.validation_metrics['acc_x'](real_x, fake_y, W_x)
+        self.validation_metrics['acc_y'](real_y, fake_x, W_y)
+
+        fake_y_int = tf.argmax( fake_y, axis=-1, output_type=tf.int32)
+        fake_x_int = tf.argmax( fake_x, axis=-1, output_type=tf.int32)
+
+        likelihood_real_x = tf.math.reduce_mean(tf.gather(prob_x, indices=real_x_int , axis=2, batch_dims=2) * tf.reshape(W_x, (-1, MAX_LEN)))
+        likelihood_fake_y = tf.math.reduce_mean(tf.gather(prob_x, indices=fake_y_int , axis=2, batch_dims=2) * tf.reshape(W_x, (-1, MAX_LEN)))
+
+        likelihood_real_y = tf.math.reduce_mean(tf.gather(prob_y, indices=real_y_int , axis=2, batch_dims=2) * tf.reshape(W_y, (-1, MAX_LEN)))
+        likelihood_fake_x = tf.math.reduce_mean(tf.gather(prob_y, indices=fake_x_int , axis=2, batch_dims=2) * tf.reshape(W_y, (-1, MAX_LEN)))
+
+        self.validation_metrics['likelihood_diff_x'](likelihood_fake_y - likelihood_real_x)
+        self.validation_metrics['likelihood_diff_y'](likelihood_fake_x - likelihood_real_y)
 
     def generate_step_bert(self, batch_data):
-
         real_x, _, prob_x = batch_data[0]
-        real_y, _, prob_y = batch_data[1]
-
-
+        real_y_int, _, prob_y = batch_data[1]
+        
+        #real_x, ids_batch, prob_x = batch_data
         ## ONE HOT cast ##
-
         W_x = tf.cast(real_x >= 0, self.compute_dtypee)            # [L,1]
-        W_y = tf.cast(real_y >= 0, self.compute_dtypee)            # [L,1]
+        W_x = tf.reshape(W_x,[-1,MAX_LEN,1])
 
         real_x = tf.one_hot(real_x, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
-        real_y = tf.one_hot(real_y, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
-
-
+        
         ## q_prob ###
-
         prob_x = tf.cast(prob_x, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
-        prob_y = tf.cast(prob_y, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
-
-
 
         ############################
 
         # Adding likelihoods to input 
         input_x_real = tf.math.add(real_x, prob_x)
-        input_y_real = tf.math.add(real_y, prob_y)
+        fake_y, _ = self.G([input_x_real, W_x], training=False)
 
+        #################### Predict temperature ##################
+        mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
+        fake_y = tf.math.multiply(fake_y, mask_x)
 
-        fake_y, _ = self.G(input_x_real, training=False)
-        fake_x, _ = self.F(input_y_real, training=False)
+        temp_real_x = self.classifier(real_x ,training=False)
+        temp_fake_y = self.classifier(fake_y,training=False)
+
         seqs_fake = []
+        temps_fake = []
+        seqs_real = []
+        temps_real = []
         ids = []
 
         for  seq_fake, w in zip(list(tf.math.argmax(fake_y,axis=-1).numpy()), list(W_x.numpy())):
-                seqs_fake.append(pre.convert_table(seq_fake, tf.reshape(w, shape=(512,))))
+            seqs_fake.append(pre.convert_table(seq_fake, tf.reshape(w, shape=(512,))))
         for  seq_true, w in zip(list(tf.math.argmax(real_x,axis=-1).numpy()), list(W_x.numpy())):
-                ids.append(pre.convert_table(seq_true, tf.reshape(w, shape=(512,))))         
-        return  ids, seqs_fake
+            seqs_real.append(pre.convert_table(seq_true, tf.reshape(w, shape=(512,))))  
+        #for id_ in ids_batch:
+        #    ids.append(id_.numpy().decode('utf-8'))
+        for temp_real, temp_fake in zip(temp_real_x, temp_fake_y):
+            temps_fake.append(temp_fake[0])
+            temps_real.append(temp_real[0])
+        
+        return  seqs_real, seqs_fake, temps_real, temps_fake 
 
     def generate_step_bert_inference(self, batch_data):
 
-        real_x, _, prob_x, _, W_x, id_x = batch_data[0]
-        real_y, _, prob_y, _, W_y, id_y = batch_data[1]
+        real_x, ids_batch, prob_x = batch_data[0]
+        ## ONE HOT cast ##
+        W_x = tf.cast(real_x >= 0, self.compute_dtypee)            # [L,1]
+        W_x = tf.reshape(W_x,[-1,MAX_LEN,1])
+
+        real_x = tf.one_hot(real_x, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
+        
+        ## q_prob ###
+        prob_x = tf.cast(prob_x, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
+
+        ############################
 
         # Adding likelihoods to input 
         input_x_real = tf.math.add(real_x, prob_x)
-        input_y_real = tf.math.add(real_y, prob_y)
+        fake_y, _ = self.G([input_x_real, W_x], training=False)
 
+        #################### Predict temperature ##################
+        mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
+        fake_y = tf.math.multiply(fake_y, mask_x)
 
-        fake_y, _ = self.G(input_x_real, training=False)
-        fake_x, _ = self.F(input_y_real, training=False)
+        temp_real_x = self.classifier(real_x ,training=False)
+        temp_fake_y = self.classifier(fake_y,training=False)
+
         seqs_fake = []
+        temps_fake = []
+        seqs_real = []
+        temps_real = []
         ids = []
 
-        for _id, seq_fake, w in zip(list(id_x.numpy()),list(tf.math.argmax(fake_y,axis=-1).numpy()), list(W_x.numpy())):
-                #print("seq", seq)
-                #print("mask", w)
-                #print("masked seq", seq[w==1])
-                seqs_fake.append(pre.convert_table(seq_fake, tf.reshape(w, shape=(512,))))  
-                ids.append(_id)
-        return ids, seqs_fake
+        for  seq_fake, w in zip(list(tf.math.argmax(fake_y,axis=-1).numpy()), list(W_x.numpy())):
+            seqs_fake.append(pre.convert_table(seq_fake, tf.reshape(w, shape=(512,))))
+        for  seq_true, w in zip(list(tf.math.argmax(real_x,axis=-1).numpy()), list(W_x.numpy())):
+            seqs_real.append(pre.convert_table(seq_true, tf.reshape(w, shape=(512,))))  
+        for id_ in ids_batch:
+            ids.append(id_.numpy().decode('utf-8'))
+        for temp_real, temp_fake in zip(temp_real_x, temp_fake_y):
+            temps_fake.append(temp_fake[0])
+            temps_real.append(temp_real[0])
+        
+        return  ids, seqs_real, seqs_fake, temps_real, temps_fake 
+
+    def generate_MAX_likelihood_step_bert_inference(self, batch_data, return_probs=False):
+
+        real_x, ids_batch, prob_x = batch_data[0]
+        ## ONE HOT cast ##
+        W_x = tf.cast(real_x >= 0, self.compute_dtypee)            # [L,1]
+        W_x = tf.reshape(W_x,[-1,MAX_LEN,1])
+
+        real_x = tf.one_hot(real_x, depth=21, dtype=self.compute_dtypee, off_value=0) # [L,21]
+        
+        ## q_prob ###
+        prob_x = tf.cast(prob_x, self.compute_dtypee) / 255.0                     # [20*MAX_LEN]
+
+        ############################
+
+        # Adding likelihoods to input 
+        input_x_real = tf.math.add(real_x, prob_x)
+        # Use the softmax output (second return) from G and pick max-likelihood tokens.
+        _, fake_y = self.G([input_x_real, W_x], training=False)
+
+        #################### Predict temperature ##################
+        mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
+        fake_y = tf.math.multiply(fake_y, mask_x)
+
+        temp_real_x = self.classifier(real_x ,training=False)
+        temp_fake_y = self.classifier(fake_y,training=False)
+
+        seqs_fake = []
+        temps_fake = []
+        seqs_real = []
+        temps_real = []
+        ids = []
+        raw_probs = [] if return_probs else None
+
+        for  seq_fake, w in zip(list(tf.math.argmax(fake_y,axis=-1).numpy()), list(W_x.numpy())):
+            seqs_fake.append(pre.convert_table(seq_fake, tf.reshape(w, shape=(512,))))
+        if return_probs:
+            # Collect per-position softmax probabilities (trimmed to non-padded tokens).
+            for probs, w in zip(list(fake_y.numpy()), list(W_x.numpy())):
+                length = int(np.sum(w))  # w is shape (512,1) with 1s on real tokens
+                raw_probs.append(probs[:length].tolist())
+        for  seq_true, w in zip(list(tf.math.argmax(real_x,axis=-1).numpy()), list(W_x.numpy())):
+            seqs_real.append(pre.convert_table(seq_true, tf.reshape(w, shape=(512,))))  
+        for id_ in ids_batch:
+            ids.append(id_.numpy().decode('utf-8'))
+        for temp_real, temp_fake in zip(temp_real_x, temp_fake_y):
+            temps_fake.append(temp_fake[0])
+            temps_real.append(temp_real[0])
+        
+        if return_probs:
+            return ids, seqs_real, seqs_fake, temps_real, temps_fake, raw_probs
+        return  ids, seqs_real, seqs_fake, temps_real, temps_fake 
+
+
     
     def save_gan(self, path, pid_G, pid_F):
         self.G.save(os.path.join(path,"generator_G.h5"))
@@ -367,16 +577,16 @@ class CycleGan(tf.keras.Model):
         self.F.save(os.path.join(path,"generator_F.h5"))
 
         with open(os.path.join(path, "optimizer_G.pkl"), "wb") as f:
-            pickle.dump(self.G.optimizer.get_weights(), f)
+            pickle.dump([v.numpy() for v in self.G.optimizer.variables], f)
 
         with open(os.path.join(path, "optimizer_Dx.pkl"), "wb") as f:
-            pickle.dump(self.D_x.optimizer.get_weights(), f)
+            pickle.dump([v.numpy() for v in self.D_x.optimizer.variables], f)
 
         with open(os.path.join(path, "optimizer_Dy.pkl"), "wb") as f:
-            pickle.dump(self.D_y.optimizer.get_weights(), f)
+            pickle.dump([v.numpy() for v in self.D_y.optimizer.variables], f)
 
         with open(os.path.join(path, "optimizer_F.pkl"), "wb") as f:
-            pickle.dump(self.F.optimizer.get_weights(), f)
+            pickle.dump([v.numpy() for v in self.F.optimizer.variables], f)
 
         with open(os.path.join(path,"PID_G.pkl"), "wb") as f:
             pickle.dump(pid_G.__dict__, f)
@@ -392,22 +602,19 @@ class CycleGan(tf.keras.Model):
         self.G.load_weights(os.path.join(path,"generator_G.h5"))
         self.F.load_weights(os.path.join(path,"generator_F.h5"))
 
-        with open(os.path.join(path, "optimizer_G.pkl"), "rb") as f:
-            self.G.optimizer.set_weights(pickle.load(f))
-        with open(os.path.join(path, "optimizer_F.pkl"), "rb") as f:
-            self.F.optimizer.set_weights(pickle.load(f))
-        with open(os.path.join(path, "optimizer_Dx.pkl"), "rb") as f:
-            self.D_x.optimizer.set_weights(pickle.load(f))
-        with open(os.path.join(path, "optimizer_Dy.pkl"), "rb") as f:
-            self.D_y.optimizer.set_weights(pickle.load(f))
+      #  with open(os.path.join(path, "optimizer_G.pkl"), "rb") as f:
+      #      self.G.optimizer.set_weights(pickle.load(f))
+      #  with open(os.path.join(path, "optimizer_F.pkl"), "rb") as f:
+      #      self.F.optimizer.set_weights(pickle.load(f))
+      #  with open(os.path.join(path, "optimizer_Dx.pkl"), "rb") as f:
+      #      self.D_x.optimizer.set_weights(pickle.load(f))
+      #  with open(os.path.join(path, "optimizer_Dy.pkl"), "rb") as f:
+      #      self.D_y.optimizer.set_weights(pickle.load(f))
 
-        with open(os.path.join(path,"PID_G.pkl"), "rb") as f:
-            state = pickle.load(f)
-        pid_G.__dict__.update(state)
+      #  with open(os.path.join(path,"PID_G.pkl"), "rb") as f:
+      #      state = pickle.load(f)
+      #  pid_G.__dict__.update(state)
 
-        with open(os.path.join(path,"PID_F.pkl"), "rb") as f:
-            state = pickle.load(f)
-        pid_F.__dict__.update(state)
-
-
-
+       # with open(os.path.join(path,"PID_F.pkl"), "rb") as f:
+       #     state = pickle.load(f)
+       # pid_F.__dict__.update(state)

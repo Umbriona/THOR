@@ -51,6 +51,16 @@ def downsampleSN(filters, size,  norm="instance", act= "Relu"):
 
     return result
 
+def compute_padding_mask(inputs, pad_value=0.0, pad_threshold=1e-6):
+    mask = tf.reduce_any(tf.abs(inputs - pad_value) > pad_threshold, axis=-1, keepdims=True)
+    return tf.cast(mask, inputs.dtype)
+
+def pool_padding_mask(mask, pool_size, strides, padding="SAME"):
+    mask_float = tf.cast(mask, tf.float32)
+    pooled = tf.nn.max_pool1d(mask_float, ksize=pool_size, strides=strides, padding=padding)
+    pooled = tf.where(pooled > 0.0, tf.ones_like(pooled), tf.zeros_like(pooled))
+    return tf.cast(pooled, mask.dtype)
+
 class UAttention(Layer):
     def __init__(self,  filters, heads=4, name = "attention",  act = "Relu"):
         super(UAttention, self).__init__(name = name)
@@ -519,11 +529,13 @@ class SelfAttentionSN(Layer):
         return config
 
 class AbsolutePositionalEmbedding(tf.keras.layers.Layer):
-    def __init__(self, max_length, embedding_dim, initializer="truncated_normal", **kwargs):
+    def __init__(self, max_length, embedding_dim, initializer="truncated_normal", pad_value=0.0, pad_threshold=1e-6, **kwargs):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.embedding_dim = embedding_dim
         self.initializer = tf.keras.initializers.get(initializer)
+        self.pad_value = pad_value
+        self.pad_threshold = pad_threshold
 
     def build(self, _):
         self.positional_table = self.add_weight(
@@ -533,19 +545,47 @@ class AbsolutePositionalEmbedding(tf.keras.layers.Layer):
             trainable=True,
         )
 
-    def call(self, inputs):
+    def call(self, inputs, mask=None):
         seq_len = tf.shape(inputs)[1]
-        return inputs + self.positional_table[:, :seq_len, :]
+        positional = self.positional_table[:, :seq_len, :]
 
-def Generator(norm="layer"):
+        if mask is None:
+            abs_diff = tf.abs(inputs - self.pad_value)
+            padding_positions = tf.reduce_all(abs_diff <= self.pad_threshold, axis=-1, keepdims=True)
+            mask = tf.logical_not(padding_positions)
+
+        mask = tf.cast(mask, positional.dtype)
+        if mask.shape.rank is None or mask.shape.rank == 2:
+            mask = tf.expand_dims(mask, axis=-1)
+
+        positional = positional * mask
+        return inputs + positional
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "max_length": self.max_length,
+                "embedding_dim": self.embedding_dim,
+                "initializer": tf.keras.initializers.serialize(self.initializer),
+                "pad_value": self.pad_value,
+                "pad_threshold": self.pad_threshold,
+            }
+        )
+        return config
+
+def Generator(norm="layer", config=None):
     inputs = tf.keras.layers.Input(shape=[512, 21])
+    mask = tf.keras.layers.Input(shape=[512, 1])
+
+    filters_down_stack = config["filters_down_stack"] 
 
     down_stack = [
-    downsample(512, 4, norm=None),  # (batch_size, 128, 128, 64)
-    downsample(512, 4, norm=norm),  # (batch_size, 64, 64, 128)
-    downsample(512, 4, norm=norm),  # (batch_size, 32, 32, 256)
-    downsample(512, 4, norm=norm),  # (batch_size, 16, 16, 512)
-    downsample(1024, 4, norm=norm),  # (batch_size, 8, 8, 512)
+    downsample(filters_down_stack[0], 4, norm=None),  # (batch_size, 128, 128, 64)
+    downsample(filters_down_stack[1], 4, norm=norm),  # (batch_size, 64, 64, 128)
+    downsample(filters_down_stack[2], 4, norm=norm),  # (batch_size, 32, 32, 256)
+    downsample(filters_down_stack[3], 4, norm=norm),  # (batch_size, 16, 16, 512)
+    downsample(filters_down_stack[4], 4, norm=norm),  # (batch_size, 8, 8, 512)
     #downsample(512, 4, norm=norm),  # (batch_size, 4, 4, 512)
     #downsample(512, 4, norm=norm),  # (batch_size, 2, 2, 512)
     #downsample(512, 4, norm=norm),  # (batch_size, 1, 1, 512)
@@ -555,34 +595,36 @@ def Generator(norm="layer"):
     #upsample(512, 4, apply_dropout=True, norm=norm),  # (batch_size, 2, 2, 1024)
     #upsample(512, 4, apply_dropout=True, norm=norm),  # (batch_size, 4, 4, 1024)
     #upsample(512, 4, apply_dropout=True, norm=norm),  # (batch_size, 8, 8, 1024)
-    upsample(512, 4, norm=norm),  # (batch_size, 16, 16, 1024)
-    upsample(512, 4, norm=norm),  # (batch_size, 32, 32, 512)
-    upsample(512, 4, norm=norm),  # (batch_size, 64, 64, 256)
-    upsample(512, 4, norm=norm),  # (batch_size, 128, 128, 128)
+    upsample(filters_down_stack[4], 4, norm=norm),  # (batch_size, 16, 16, 1024)
+    upsample(filters_down_stack[3], 4, norm=norm),  # (batch_size, 16, 16, 1024)
+    upsample(filters_down_stack[2], 4, norm=norm),  # (batch_size, 32, 32, 512)
+    upsample(filters_down_stack[1], 4, norm=norm),  # (batch_size, 64, 64, 256)
+    upsample(filters_down_stack[0], 4, norm=norm),  # (batch_size, 128, 128, 128)
     ]
 
     down_res_stack = [
-        ResModPreAct(512,4, norm = False, name="res_down0"),
-        ResModPreAct(512,4, norm = "layer", name="res_down1"),
-        ResModPreAct(512,4, norm = "layer", name="res_down2"),
-        ResModPreAct(512,4, norm = "layer", name="res_down3"),
-        ResModPreAct(1024,4, norm = "layer", name="res_down4"),
+        ResModPreAct(filters_down_stack[0],12, norm = False, name="res_down0"),
+        ResModPreAct(filters_down_stack[1],4, norm = "layer", name="res_down1"),
+        ResModPreAct(filters_down_stack[2],4, norm = "layer", name="res_down2"),
+        ResModPreAct(filters_down_stack[3],4, norm = "layer", name="res_down3"),
+        ResModPreAct(filters_down_stack[4],4, norm = "layer", name="res_down4"),
         ]
     
 
 
     initializer = tf.random_normal_initializer(0., 0.02)
-    last = tf.keras.layers.Conv1DTranspose(21, 4,
-                                         strides=2,
+    bottom = ResModPreAct(filters_down_stack[0],4, norm = "layer", name="bottom")
+    last = tf.keras.layers.Conv1D(21, 4,
+                                         strides=1,
                                          padding='same',
                                          kernel_initializer=initializer,
-                                         activation='linear')  # (batch_size, 256, 256, 3)
+                                         activation='linear', dtype="float32")  # (batch_size, 256, 256, 3)
     pos_emb = AbsolutePositionalEmbedding(max_length=512, embedding_dim=inputs.shape[-1], name="gen_pos_emb")
     gsm_out = GumbelSoftmax()
-    sm_out = Softmax()
+    sm_out = Softmax(dtype="float32")
 
     x = inputs
-    x = pos_emb(x)
+    x = pos_emb(x, mask)
     # Downsampling through the model
     skips = []
     for down, res in zip(down_stack, down_res_stack):
@@ -590,17 +632,17 @@ def Generator(norm="layer"):
         skips.append(x)
         x = down(x)
         
-
+    x = bottom(x)
     skips = reversed(skips)#[:-1])
-
+    filters_down_stack = reversed(filters_down_stack)
     # Upsampling and establishing the skip connections
-    filt = [512, 512, 512, 512]
-    heads = [8, 8, 8, 8]
+   # filt = [512, 256, 128, 64]
+   # heads = [8, 4, 2, 1]
     nn = 0
-    for up, skip in zip(up_stack, skips):
+    for up, skip, filt in zip(up_stack, skips, filters_down_stack):
         x = up(x)
-        x, _ = UAttention(filt[nn], heads[nn], name=f"U_atte{nn}")(x, skip)
-        x = ResModPreAct(filt[nn],4, norm = "layer", name=f"res_up{nn}")(x)
+        x, _ = UAttention(filt, filt//64, name=f"U_atte{nn}")(x, skip)
+        x = ResModPreAct(filt,4, norm = "layer", name=f"res_up{nn}")(x)
         nn += 1
         #x = tf.keras.layers.Concatenate()([x, skip])
 
@@ -608,37 +650,62 @@ def Generator(norm="layer"):
     sm  = sm_out(x)
     gsm = gsm_out(x)
     
-    return tf.keras.Model(inputs=inputs, outputs=[gsm, sm])
+    return tf.keras.Model(inputs=[inputs, mask], outputs=[gsm, sm])
 
-def Discriminator(norm="layer"):
+def Discriminator(norm="layer", config = None):
+    filters = config["filters"] 
     initializer = tf.random_normal_initializer(0., 0.02)
 
-    inp = tf.keras.layers.Input(shape=[ 512, 21], name='input_image')
-    x = tf.keras.layers.GaussianNoise(stddev = 0.1)(inp)
-    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=inp.shape[-1], name="disc_pos_emb")(x)
-    down1 = downsampleSN(512, 4, False, act = "LReLU")(x)  # (batch_size, 128, 128, 64)
+    inp = tf.keras.layers.Input(shape=[512, 21], name='input_image')
+    mask_input = tf.keras.layers.Input(shape=[512, 1], name='input_mask')
+    mask = tf.cast(mask_input, inp.dtype)
+    mask = tf.stop_gradient(mask)
 
-    x = ResModPreActSN(512, 4, norm=norm, act = "LReLU", name="res0")(down1)
+    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=inp.shape[-1], name="disc_pos_emb")(inp, mask)
+    mask = tf.cast(mask, x.dtype)
+    x = x * mask
+    x = tf.keras.layers.GaussianNoise(stddev = 0.05)(x)
+    x = ResModPreActSN(filters[0], 6, norm=norm, act = "LReLU", name="res_proj")(x)
+    down1 = downsampleSN(filters[0], 4, False, act="LReLU")(x)  # (batch_size, 256, 512)
+    mask = tf.stop_gradient(pool_padding_mask(mask, pool_size=2, strides=2))
+    mask = tf.cast(mask, down1.dtype)
+    down1 = down1 * mask
+
+    x = ResModPreActSN(filters[0], 4, norm=norm, act = "LReLU", name="res0")(down1)
+    x = x * mask
     
     
-    down2 = downsampleSN(512, 4, norm = norm, act = "LReLU")(x)  # (batch_size, 64, 64, 128)
+    down2 = downsampleSN(filters[1], 4, norm = norm, act = "LReLU")(x)  # (batch_size, 64, 64, 128)
+    mask = tf.stop_gradient(pool_padding_mask(mask, pool_size=2, strides=2))
+    mask = tf.cast(mask, down2.dtype)
+    down2 = down2 * mask
 
-    x = ResModPreActSN(512, 4, act = "LReLU", norm=norm, name="res1")(down2)
-    x = ResModPreActSN(512, 4, act = "LReLU", norm=norm, name="res11")(x)
-    x, _ = SelfAttentionSN(512, heads=4, act = "LReLU", name = "attention_0")(x)
+    x = ResModPreActSN(filters[1], 4, act = "LReLU", norm=norm, name="res1")(down2)
+    x = ResModPreActSN(filters[1], 4, act = "LReLU", norm=norm, name="res11")(x)
+    x = x * mask
+    x, _ = SelfAttentionSN(filters[1], heads=filters[1]//64, act = "LReLU", name = "attention_0")(x)
+    x = x * mask
     
-    down3 = downsampleSN(512, 4, norm=norm, act = "LReLU" )(x)  # (batch_size, 32, 32, 256)
+    down3 = downsampleSN(filters[2], 4, norm=norm, act = "LReLU" )(x)  # (batch_size, 32, 32, 256)
+    mask = tf.stop_gradient(pool_padding_mask(mask, pool_size=2, strides=2))
+    mask = tf.cast(mask, down3.dtype)
+    down3 = down3 * mask
 
 
-    x = ResModPreActSN(512, 4, norm=norm, act = "LReLU",  name="res2")(down3)
-    x = ResModPreActSN(512, 4, norm=norm, act = "LReLU",  name="res22")(x)
-    x, _ = SelfAttentionSN(512, heads = 8, act = "LReLU", name = "attention_1")(x)
+    x = ResModPreActSN(filters[2], 4, norm=norm, act = "LReLU",  name="res2")(down3)
+    x = ResModPreActSN(filters[2], 4, norm=norm, act = "LReLU",  name="res22")(x)
+    x = x * mask
+    x, _ = SelfAttentionSN(filters[2], heads = filters[2]//64, act = "LReLU", name = "attention_1")(x)
+    x = x * mask
    
 
     
 
     last = tf.keras.layers.Conv1D(1, 4, strides=1,
                                 kernel_initializer=initializer,
-                                 activation=None)(x) # (batch_size, 30, 30, 1)
+                                 activation=None, dtype="float32")(x) # (batch_size, 30, 30, 1)
+    final_mask = pool_padding_mask(mask, pool_size=4, strides=1, padding="VALID")
+    final_mask = tf.cast(final_mask, last.dtype)
+    last = last * final_mask
 
-    return tf.keras.Model(inputs=inp, outputs=last)
+    return tf.keras.Model(inputs=[inp, mask_input], outputs=[last, final_mask])

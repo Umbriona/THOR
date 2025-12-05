@@ -46,14 +46,14 @@ def read_fasta(file):
             continue
             #raise ValueError (f"Sequences can not contain non standard amino acids")
         try: 
-            int(float(rec.description.split()[-1]))
+            int(float(rec.description.split()[-1].split('=')[-1]))
         except:
-            print(f"{float(rec.description.split()[-1])} Not a value")
+            print(f"{float(rec.description.split()[-1].split('=')[-1])} Not a value")
             continue
         df_fasta["id"].append(rec.id)
         df_fasta["seq"].append(str(rec.seq))
         df_fasta["len"].append(len(rec.seq))
-        df_fasta["TM"].append(float(rec.description.split()[-1]))
+        df_fasta["TM"].append(float(rec.description.split()[-1].split('=')[-1]))
     df_fasta = pd.DataFrame(df_fasta)
     df_fasta.sort_values(by="len", inplace=True)
     print(f"Sequences can not contain non standard amino acids Removing: {count} sequences")
@@ -85,7 +85,7 @@ def creat_embedings(df_fasta):
         sequences = list(zip(tmp_df["id"], tmp_df["seq"]))
         
         for batch_start in tqdm(range(0, len(sequences), args.batch_size), desc=f"Batching [{start}:{end}]"):
-            output = os.path.join(args.output, f"embeddings_TEMP20_{int(tmp_df['TM'].min())}_{int(tmp_df['TM'].max())}_ID_{args.ID}_file_{file_nr}.pt")
+            output = args.output
             if os.path.isfile(output):
                 print(f"file: {output} alredy exist")
                 continue
@@ -108,7 +108,7 @@ def creat_embedings(df_fasta):
         #output = os.path.join(args.output, f"embeddings_TEMP_{int(tmp_df['TM'].min())}_{int(tmp_df['TM'].max())}_ID_{args.ID}_file_{file_nr}.pt")
         print(f"Writing embeddings to file {output}")
         write_pickel(tmp_df, output)
-        write_record(tmp_df, output)
+       # write_record(tmp_df, output)
         print(f"written file {file_nr}")
         file_nr += 1
         

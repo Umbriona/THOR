@@ -6,8 +6,7 @@ from tensorflow.keras.regularizers import L1L2
 from typeguard import typechecked
 import numpy as np
 
-POWER_ITERATIONS = 5
-
+POWER_ITERATIONS = 2  # 1–2 is typically enough
 
 class SpectralNormalization(tf.keras.layers.Wrapper):
     """ From tensorflow addons https://github.com/tensorflow/addons/blob/v0.14.0/tensorflow_addons/layers/spectral_normalization.py
@@ -115,38 +114,69 @@ class SpectralNormalization(tf.keras.layers.Wrapper):
 
 
     
-class GumbelSoftmax(Layer):
-    def __init__(self,temperature = 0.5, name = "gumbel", *args, **kwargs):
-        super(GumbelSoftmax,self).__init__(name = name)
-        
-        self.temperature=temperature
-        # Temperature
-      #  self.tau = self.add_weight(shape=(1,),name=f"{self.name}tau", initializer=tf.keras.initializers.Constant(value=1),dtype=tf.float32,trainable=False) #temperature #tf.constant(temperature, dtype=tf.float32, name = self.name + "tau")
-        
-        
+class GumbelSoftmax(tf.keras.layers.Layer):
+    def __init__(self, temperature=0.5, hard=False, name="gumbel", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.initial_temperature = float(temperature)
+        self.hard = bool(hard)
+
     def build(self, input_shape):
-        self.tau = self.add_weight(shape=(),name=f"{self.name}tau", initializer=tf.keras.initializers.Constant(value=self.temperature),dtype=tf.float32,trainable=False)
+        # In Keras MP, variable dtype is usually float32 even if compute dtype is bf16/fp16.
+        var_dtype = tf.keras.mixed_precision.global_policy().variable_dtype
+        self.tau = self.add_weight(
+            shape=(),
+            name=f"{self.name}_tau",
+            initializer=tf.keras.initializers.Constant(self.initial_temperature),
+            dtype=var_dtype,
+            trainable=False,
+        )
+        super().build(input_shape)
 
-    def get_config(self):   
-        return  {f"temperature": self.temperature}
+    def get_config(self):
+        base = super().get_config()
+        return {**base, "temperature": self.initial_temperature, "hard": self.hard}
 
-   # def call(self, logits):
-   #     U = tf.random.uniform(tf.shape(logits), minval=0, maxval=1, dtype=tf.dtypes.float32)
-   #     g = -tf.math.log(-tf.math.log(U+1e-20))
-   #     nom = tf.keras.activations.softmax((g + logits)/self.tau, axis=-1)
-   #     return nom
+    @staticmethod
+    def _sample_gumbel(shape, dtype, seed=None, eps=1e-6):
+        if seed is None:
+            u = tf.random.uniform(shape, minval=eps, maxval=1. - eps, dtype=dtype)
+        else:
+            # Reproducible path if you ever pass a seed
+            u = tf.random.stateless_uniform(shape, seed=seed, minval=eps, maxval=1. - eps, dtype=dtype)
+        return -tf.math.log(-tf.math.log(u))
 
-    def call(self, logits):
+    def call(self, logits, training=None, seed=None):
         logits = tf.convert_to_tensor(logits)
-        compute_dtype = tf.keras.mixed_precision.global_policy().compute_dtype
-        logits_fp32 = tf.cast(logits, compute_dtype)
+        logits_dtype = logits.dtype
+        use_high_precision = logits_dtype in (tf.float16, tf.bfloat16)
+        work_dtype = tf.float32 if use_high_precision else (self.compute_dtype or logits_dtype)
+        logits_c = tf.cast(logits, work_dtype)
+        tau = tf.cast(self.tau, work_dtype)
 
-        tau = tf.cast(self.tau, compute_dtype)
-        u = tf.random.uniform(tf.shape(logits), minval=0.0, maxval=1.0, dtype=compute_dtype)
-        g = -tf.math.log(-tf.math.log(tf.maximum(u, 1e-20)))
-        y = tf.nn.softmax((logits_fp32 + g) / tau, axis=-1)
+        #if training is False and not self.hard:
+            # Deterministic soft outputs at inference (optional)
+        #    y = tf.nn.softmax(logits_c / tf.maximum(tau, tf.cast(1e-8, work_dtype)), axis=-1)
+        #    return tf.cast(y, logits_dtype)
 
-        return tf.cast(y, logits.dtype)
+        g = self._sample_gumbel(tf.shape(logits_c), dtype=work_dtype, seed=seed)
+        z = (logits_c + g) / tf.maximum(tau, tf.cast(1e-8, work_dtype))
+
+        # Soft sample (subtract max for extra stability)
+        z = z - tf.stop_gradient(tf.reduce_max(z, axis=-1, keepdims=True))
+        y_soft = tf.nn.softmax(z, axis=-1)
+
+        if not self.hard:
+            return tf.cast(y_soft, logits_dtype)
+
+        # Hard (one-hot) with straight-through estimator
+        y_hard = tf.one_hot(tf.argmax(y_soft, axis=-1), depth=tf.shape(y_soft)[-1], dtype=y_soft.dtype)
+        y = y_hard + tf.stop_gradient(y_soft - y_hard)
+        return tf.cast(y, logits_dtype)
+
+    # Convenience: update temperature during training (e.g., annealing)
+    def set_temperature(self, value):
+        value = tf.convert_to_tensor(value, dtype=self.tau.dtype)
+        self.tau.assign(value)
     
 class Conv1DTranspose(Layer):
     def __init__(self, filters, kernel_size, strides=1, activation = None, name=None,use_bias=False, *args, **kwargs):

@@ -26,7 +26,7 @@ from tensorflow.keras import layers
 from matplotlib import pyplot as plt
 from threading import Thread
 
-from utils.loaders import load_data, load_optimizers, load_metrics, load_losses
+from utils.loaders import load_data, load_optimizers, load_losses
 from utils import models_cyclegan_self_loss as models_gan
 from utils import models_classifyer as models_class
 from utils import callbacks
@@ -37,10 +37,10 @@ from simple_pid import PID
 parser = argparse.ArgumentParser(""" """)
 
 
-parser.add_argument("--epoch", type=int, nargs="+", default=1999,
+parser.add_argument("--epoch", type=int, default=1999,
 			help = "Specify epoch to load")
 
-parser.add_argument('-c', '--config', type=str, default = 'config.yaml',
+parser.add_argument('-i', '--input', type=str, required=True,
                    help = 'Configuration file that configures all parameters')
 
 parser.add_argument('-v', '--verbose', action="store_true",
@@ -49,41 +49,26 @@ parser.add_argument('-g', '--gpu', type=str, choices=['0', '1','0,1'], default='
 
 args = parser.parse_args()
 
-REPLICATES=100
+REPLICATES=50
 
-def generate(config, model, data, time, classifyer, epoch):
-    REPLICATES=config['CycleGan']['Generate']['replicates']
-    print(f"Making: {REPLICATES} for each sequence")
-    try: 
-        print("setting dynamic to {}".format(config['CycleGan']["dynamic"]))
-        dynamic = config['CycleGan']["dynamic"]
-    except:
-        print("Setting dynamic to True")
-        dynamic = True
-        
-    print(dynamic)
-    #file writers
-    result_dir = os.path.join(config['Results']['base_dir'],time)
+def generate(config, model, data):
     
-    base_dir = os.path.join(config['Log']['base_dir'],time)
+    print(f"Making: {REPLICATES} for each sequence")
 
-    batches_x = data['meso_train'].batch(config['CycleGan']['batch_size'], drop_remainder=False) 
-    batches_y = data['thermo_train'].batch(config['CycleGan']['batch_size'], drop_remainder=False)
+    batches = data.batch(config['CycleGan']['batch_size'], drop_remainder=False) 
+    gms_g = model.G.get_layer("gumbel")
+    gms_g.hard = True
+    for rep in range(REPLICATES): 
 
-    for rep in range(config['CycleGan']['Generate']['replicates']): 
+        for batch in zip(batches):
 
-        for batch in zip(batches_x, batches_y):
-            if config['CycleGan']['BERT'] in ["generator", "all"]:
-                temp_diff_y, temp_diff_x, (temp_real_x, temp_fake_x),  (temp_real_y, temp_fake_y) = model.validate_step_bert(batch)
-                ids, fake_y = model.generate_step_bert(batch)
+            ids, seqs_real, seqs_fake, temps_real, temps_fake = model.generate_step_bert_inference(batch)
 
-            else:
-                ids, fake_y = model.generate_step(batch)
-
-            with open(f"{config['Results']['base_dir']}/{config['CycleGan']['Generate']['name_fasta']}_epoch{epoch}_{REPLICATES}replicates.fasta", "a") as f:
-                for _id, fake, temp_diff, temp_fake in zip(ids, fake_y, temp_diff_x, temp_fake_y):
+            with open(f"{args.input}/variants_{args.epoch}.fasta", "a") as f:
+                for _id, real, fake, temp_real, temp_fake in zip(ids, seqs_real, seqs_fake, temps_real, temps_fake):
                     #print(f"Writing id: {_id}")
-                    f.write(f">{_id}_{rep} {epoch} {temp_diff} {temp_fake}\n{fake}\n")
+                    f.write(f">{_id}_wt_{rep} {temp_real}\n{real}\n")
+                    f.write(f">{_id}_variant_{rep} {temp_fake}\n{fake}\n")
 
     return 
 
@@ -97,30 +82,13 @@ def main():
     # Get time
     time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     # Load configuration file
-    with open(args.config, 'r') as file_descriptor:
+    config_file = f"{args.input}/config.yaml"
+    with open(config_file, 'r') as file_descriptor:
         config = yaml.load(file_descriptor, Loader=yaml.FullLoader)
-        
-    with open(args.config, 'r') as file_descriptor:
-        config_str = file_descriptor.read()
-    
-    result_dir = os.path.join(config['Results']['base_dir'],time + os.path.basename(args.config))
-    os.mkdir(os.path.join(result_dir))
-    os.mkdir(os.path.join(result_dir,'weights'))
-    
-    # Load training data
-    if config['CycleGan']['BERT'] in ["generator", "all"]:
-        data_train_meso, data_val_meso = pre.load_data_bert(config["Data_meso"])
-        data_train_thermo, data_val_thermo = pre.load_data_bert(config["Data_thermo"])
-    else:
-        data_train_meso, data_val_meso = pre.load_data(config["Data_meso"], model="cycle_gan")
-        data_train_thermo, data_val_thermo = pre.load_data(config["Data_thermo"], model="cycle_gan")
-    data = {'meso_train': data_train_meso, 'thermo_train': data_train_thermo, 'meso_val':data_val_meso , 'thermo_val': data_val_thermo}
-    #data = load_data(config['Data'])
-    
-    # Callbacks
-    #cb = callbacks.PCAPlot(data['thermo_train'].as_numpy_iterator(), data['meso_train'].as_numpy_iterator(), data['n_thermo_train'], data['n_meso_train'], logdir=os.path.join(config['Log']['base_dir'],time,'img')) 
-    
-        # load classifyer
+
+    dataSet = pre.load_compact_data_bert_inference("/data/records/PETases/prot_bert_bfd_single/Meso*.tfrecord.gz")
+
+    ###################### load classifyer #######################
     models_weights = ["../../weights/OGT/Model1/variables/variables", "../../weights/OGT/Model2/variables/variables", "../../weights/OGT/Model3/variables/variables"]
     names = ["model1", "model2", "model3"]
     file = "../../config/Classifier/config_classifier1.yaml"
@@ -135,8 +103,6 @@ def main():
     output2 = model2(model_input)
     output3 = model3(model_input)
 
-    #model1.summary()
-
     model1.load_weights(models_weights[0]).expect_partial()
     model2.load_weights(models_weights[1]).expect_partial()
     model3.load_weights(models_weights[2]).expect_partial()
@@ -144,32 +110,35 @@ def main():
     ensemble_output = tf.keras.layers.Average()([output1, output2, output3])
     ensemble_model = tf.keras.Model(inputs=model_input, outputs=ensemble_output)
 
-    #ensemble_model.summary()
+    ####################################################
+
     
     
-    # Initiate model
+    ###################### Initiate model ##############################
     model = models_gan.CycleGan(config, classifier = ensemble_model)
     loss_obj  = load_losses(config['CycleGan']['Losses'])
     optimizers = load_optimizers(config['CycleGan']['Optimizers'])
     model.compile(loss_obj, optimizers)
-    for epoch in config['CycleGan']['Generate']['epochs']:
-        print(f"Loading weights at: /mimer/NOBACKUP/groups/snic2022-6-127/ThermalGAN/results/{config['CycleGan']['Generate']['dir_model']}/weights/epoch_{epoch}")
-        model.load_gan(f"/mimer/NOBACKUP/groups/snic2022-6-127/ThermalGAN/results/{config['CycleGan']['Generate']['dir_model']}/weights/epoch_{epoch}")
 
-    # Initiate Training
+    #########
+    pid_G = PID(config['CycleGan']['PID_P'], config['CycleGan']['PID_I'], config['CycleGan']['PID_D'], setpoint=config['CycleGan']['lambda_self'], sample_time=None)
+    pid_F = PID(config['CycleGan']['PID_P'], config['CycleGan']['PID_I'], config['CycleGan']['PID_D'], setpoint=config['CycleGan']['lambda_self'], sample_time=None)
 
-        history = generate(config, model, data, time + os.path.basename(args.config), classifyer = ensemble_model, epoch=epoch)
+    pid_G.output_limits = (0, 20)
+    pid_F.output_limits = (0, 20)
 
-    #writing results
+    print("Created PID controlers")
+    ##########
 
-    # Save model
-#    model.save_weights(os.path.join(result_dir,'weights','cycle_gan_model_final'))
-    # Write history obj
-#    df = pd.DataFrame(history)
-#    df.to_csv(os.path.join(result_dir,'history.csv'))
-    # Save config_file
-#    with open(os.path.join(result_dir, 'config.yaml'), 'w') as file_descriptor:
-#        file_descriptor.write(config_str)
+    # Load weights 
+    model.load_gan(f"{args.input}/weights/epoch_{args.epoch}", pid_G, pid_F)
+    #####################################################################
+    
+    ######################## Generate sequences ##########################
+
+    history = generate(config, model, dataSet)
+
+    print("Done generating sequences!")
         
     return 0
     
