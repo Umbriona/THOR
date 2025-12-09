@@ -372,26 +372,34 @@ def train(config, model, data, time, classifyer):
 
     ############################################## Training loop ###############################################
 
-    meso_iter = iter(data['meso_train'])
-    thermo_iter = iter(data['thermo_train'])
-    steps_per_epoch = int(1e6 / config['CycleGan']['batch_size'])
+    # Steps per epoch based on effective batch (per-replica * num_replicas)
+    steps_per_epoch = max(1, int(1e6 / config['CycleGan']['batch_size']))
+    #train_dist_ds = strategy.experimental_distribute_dataset(
+    #    tf.data.Dataset.zip((data['meso_train'], data['thermo_train']))
+    #)
+    log_interval = max(1, int(1024 / config['CycleGan']['batch_size']))
+
+
+
+    train_iter_meso = iter(data['meso_train'])
+    train_iter_thermo = iter(data['thermo_train'])
 
     for epoch in range(config['CycleGan']['epochs']):
         start_time = TIME()
         for step in range(steps_per_epoch):
-            
-            batches_Meso = next(meso_iter)
-            batches_Thermo = next(thermo_iter)
+            batche_meso = next(train_iter_meso)
+            batche_thermo = next(train_iter_thermo)
+            batches = [batche_meso, batche_thermo]
             if step%config['CycleGan']["Fractional_training"] == 0:
-                model.train_step( batch_data = [batches_Meso, batches_Thermo]) # returns losses_, logits = 
+                model.train_step(batches) # returns losses_, logits = 
             else:
-                model.train_step_generator( batch_data = [batches_Meso, batches_Thermo])
+                model.train_step_generator(batches)
             
-            model.validate_step([batches_Meso, batches_Thermo])
+            model.validate_step(batches)
             global_step += 1
             current_lrs = lr_scheduler(global_step)
 
-            if step%int(1024/config['CycleGan']['batch_size']) == 0 and step>0: #2e5/config['CycleGan']['batch_size']
+            if step%log_interval == 0 and step>0: #2e5/config['CycleGan']['batch_size']
                 print_stuff(model, current_lrs, global_step)   
 
                 history_obj.update_training_history(model, global_step )
@@ -423,8 +431,9 @@ def train(config, model, data, time, classifyer):
         start_time = TIME()
         val_x = data['meso_val'].batch(config['CycleGan']['batch_size'], drop_remainder=True).prefetch(buffer_size=tf.data.AUTOTUNE)
         val_y = data['thermo_val'].batch(config['CycleGan']['batch_size'], drop_remainder=True).prefetch(buffer_size=tf.data.AUTOTUNE)
-        for i, x in enumerate(zip(val_x, val_y)):
-            model.validate_step(x)
+
+        for batch in zip(val_x, val_y):
+            model.validate_step(batch)
 
         history_obj.update_test_history(model, epoch )
         history_obj.write_test_history()
@@ -484,7 +493,9 @@ def main():
     with open(os.path.join(result_dir, 'config.yaml'), 'w') as file_descriptor:
         file_descriptor.write(config_str)
     os.mkdir(os.path.join(result_dir,'weights'))
-    
+
+
+ 
     # Load training data
     if config['CycleGan']['BERT'] in ["generator", "all"]:
         data_train_meso, data_val_meso = pre.load_compact_data_bert(config, "Data_meso",batch_size = config['CycleGan']['batch_size'])#["Data_meso"])
@@ -498,12 +509,13 @@ def main():
     # Callbacks
     #cb = callbacks.PCAPlot(data['thermo_train'].as_numpy_iterator(), data['meso_train'].as_numpy_iterator(), data['n_thermo_train'], data['n_meso_train'], logdir=os.path.join(config['Log']['base_dir'],time,'img')) 
     print("Loaded data")
-        # load classifyer
+    # load classifyer
     models_weights = ["../../weights/OGT/Model1/variables/variables", "../../weights/OGT/Model2/variables/variables", "../../weights/OGT/Model3/variables/variables"]
     names = ["model1", "model2", "model3"]
     file = "../../config/Classifier/config_classifier1.yaml"
     with open(file, 'r') as file_descriptor:
         config_class = yaml.load(file_descriptor, Loader=yaml.FullLoader)
+
     model_input = tf.keras.layers.Input(shape=(512,21))
     model1 = models_class.get_classifier(config_class['Classifier'], 21)
     model2 = models_class.get_classifier(config_class['Classifier'], 21)

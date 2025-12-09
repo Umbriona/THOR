@@ -34,10 +34,14 @@ INPUT=${DATA_DIR}/results/20251125-162825config_46.yaml/ #../../results/Models_u
 #for idx in 0 
 #do
 # run training
+for EPOCH in 3 6 9 12 15 18 21 24 27 30 33 36 39
+do
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
 --nv ${IMAGE}  python test_generate_ThermalGAN.py \
---input ${INPUT} -v -g 0 \
---epoch 33
-#done
+--input ${INPUT} \
+'--store_softmax' \
+-v -g 0 \
+--epoch $EPOCH
+done

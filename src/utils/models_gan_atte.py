@@ -619,12 +619,15 @@ def Generator(norm="layer", config=None):
                                          padding='same',
                                          kernel_initializer=initializer,
                                          activation='linear', dtype="float32")  # (batch_size, 256, 256, 3)
-    pos_emb = AbsolutePositionalEmbedding(max_length=512, embedding_dim=inputs.shape[-1], name="gen_pos_emb")
+    #pos_emb = AbsolutePositionalEmbedding(max_length=512, embedding_dim=inputs.shape[-1], name="gen_pos_emb")
     gsm_out = GumbelSoftmax()
     sm_out = Softmax(dtype="float32")
 
     x = inputs
-    x = pos_emb(x, mask)
+    if "input_projection" in config:
+        x = tf.keras.layers.Conv1D(filters_down_stack[0], 1,strides=1, padding='same', activation='linear')(x)
+    #x = pos_emb(x, mask)
+    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=x.shape[-1], name="gen_pos_emb")(x)
     # Downsampling through the model
     skips = []
     for down, res in zip(down_stack, down_res_stack):
@@ -650,21 +653,23 @@ def Generator(norm="layer", config=None):
     sm  = sm_out(x)
     gsm = gsm_out(x)
     
-    return tf.keras.Model(inputs=[inputs, mask], outputs=[gsm, sm])
+    return tf.keras.Model(inputs=[inputs, mask], outputs=[gsm, sm, x])
 
 def Discriminator(norm="layer", config = None):
     filters = config["filters"] 
     initializer = tf.random_normal_initializer(0., 0.02)
 
     inp = tf.keras.layers.Input(shape=[512, 21], name='input_image')
+    x = inp
     mask_input = tf.keras.layers.Input(shape=[512, 1], name='input_mask')
-    mask = tf.cast(mask_input, inp.dtype)
+    mask = tf.cast(mask_input, x.dtype)
     mask = tf.stop_gradient(mask)
-
-    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=inp.shape[-1], name="disc_pos_emb")(inp, mask)
+    if "input_projection" in config:
+        x = tf.keras.layers.Conv1D(filters[0], 1,strides=1, padding='same', activation='linear')(x)
+    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=x.shape[-1], name="disc_pos_emb")(x, mask)
     mask = tf.cast(mask, x.dtype)
     x = x * mask
-    x = tf.keras.layers.GaussianNoise(stddev = 0.05)(x)
+    x = tf.keras.layers.GaussianNoise(stddev = 0.01)(x)
     x = ResModPreActSN(filters[0], 6, norm=norm, act = "LReLU", name="res_proj")(x)
     down1 = downsampleSN(filters[0], 4, False, act="LReLU")(x)  # (batch_size, 256, 512)
     mask = tf.stop_gradient(pool_padding_mask(mask, pool_size=2, strides=2))

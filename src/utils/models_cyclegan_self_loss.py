@@ -14,6 +14,7 @@ from utils import models_gan_atte as gan
 from utils.loaders import  load_training_metrics, load_validation_metrics
 
 MAX_LEN=512
+USE_XLA = True
 
 class PIDWrapper(tf.Module):
     def __init__(self, pid):
@@ -123,7 +124,7 @@ class CycleGan(tf.keras.Model):
 
         return G, F, D_x, D_y
     
-    @tf.function(jit_compile=True)
+    @tf.function(jit_compile=USE_XLA)
     def train_step(self, batch_data):
 
         with tf.GradientTape(persistent=True) as tape:
@@ -161,21 +162,21 @@ class CycleGan(tf.keras.Model):
             input_y_real = tf.math.add(real_y, prob_y)
 
 
-            fake_y_tmp, _ = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
+            fake_y_tmp, fake_y_sm, fake_y_logits = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
 
             fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
             
             input_y_fake = tf.math.add(fake_y, prob_x)
-            _, cycled_x = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
+            _, cycled_x, _ = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
 
-            fake_x_tmp, _ = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
+            fake_x_tmp, fake_x_sm, fake_x_logits = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
             fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
             input_x_fake = tf.math.add(fake_x, prob_y)
-            _, cycled_y = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
+            _, cycled_y, _ = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
 
             # Identity mapping
-            _, same_x = self.F([input_x_real, mask_x], training=True)  #F:x -> x
-            _, same_y = self.G([input_y_real, mask_y], training=True)  #G:y -> y
+            _, same_x, _ = self.F([input_x_real, mask_x], training=True)  #F:x -> x
+            _, same_y, _ = self.G([input_y_real, mask_y], training=True)  #G:y -> y
             
             disc_real_x, final_mask_x = self.D_x([input_x_real, mask_x], training=True)
             disc_real_y, final_mask_y = self.D_y([input_y_real, mask_y], training=True)
@@ -246,7 +247,7 @@ class CycleGan(tf.keras.Model):
         self.training_metrics['id_acc_x'](real_x, same_x, W_x)
         self.training_metrics['id_acc_y'](real_y, same_y, W_y)
 
-    @tf.function(jit_compile=True)
+    @tf.function(jit_compile=USE_XLA)
     def train_step_generator(self, batch_data):
 
         with tf.GradientTape(persistent=True) as tape:
@@ -284,21 +285,21 @@ class CycleGan(tf.keras.Model):
             input_y_real = tf.math.add(real_y, prob_y)
 
 
-            fake_y_tmp, _ = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
+            fake_y_tmp, fake_y_sm, fake_y_logits = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
 
             fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
             
             input_y_fake = tf.math.add(fake_y, prob_x)
-            _, cycled_x = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
+            _, cycled_x, _ = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
 
-            fake_x_tmp, _ = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
+            fake_x_tmp, fake_x_sm, fake_x_logits = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
             fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
             input_x_fake = tf.math.add(fake_x, prob_y)
-            _, cycled_y = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
+            _, cycled_y, _ = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
 
             # Identity mapping
-            _, same_x = self.F([input_x_real, mask_x], training=True)  #F:x -> x
-            _, same_y = self.G([input_y_real, mask_y], training=True)  #G:y -> y
+            _, same_x, _ = self.F([input_x_real, mask_x], training=True)  #F:x -> x
+            _, same_y, _ = self.G([input_y_real, mask_y], training=True)  #G:y -> y
             
             disc_real_x, final_mask_x = self.D_x([input_x_real, mask_x], training=True)
             disc_real_y, final_mask_y = self.D_y([input_y_real, mask_y], training=True)
@@ -361,7 +362,7 @@ class CycleGan(tf.keras.Model):
         self.training_metrics['id_acc_x'](real_x, same_x, W_x)
         self.training_metrics['id_acc_y'](real_y, same_y, W_y)
 
-    @tf.function(jit_compile=True)
+    @tf.function(jit_compile=USE_XLA)
     def validate_step(self, batch_data):#batch_data):
         
         real_x_int, _, prob_x = batch_data[0]
@@ -392,8 +393,8 @@ class CycleGan(tf.keras.Model):
         input_x_real = tf.math.add(real_x, prob_x)
         input_y_real = tf.math.add(real_y, prob_y)
         
-        fake_y, _ = self.G([input_x_real, W_x], training=False)
-        fake_x, _ = self.F([input_y_real, W_y], training=False)
+        fake_y, fake_y_sm, fake_y_logits = self.G([input_x_real, W_x], training=False)
+        fake_x, fake_x_sm, fake_x_logits = self.F([input_y_real, W_y], training=False)
 
         # mask fakes
         mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
@@ -401,13 +402,21 @@ class CycleGan(tf.keras.Model):
 
         fake_y = tf.math.multiply(fake_y, mask_x)
         fake_x = tf.math.multiply(fake_x, mask_y)
+        # Ensure classifier receives one-hot encoded generated sequences
+        fake_y_int = tf.argmax(fake_y, axis=-1)
+        fake_y_oh = tf.one_hot(fake_y_int, depth=21, dtype=self.compute_dtypee, off_value=0)
+        fake_y_oh = tf.math.multiply(fake_y_oh, mask_x)
+
+        fake_x_int = tf.argmax(fake_x, axis=-1)
+        fake_x_oh = tf.one_hot(fake_x_int, depth=21, dtype=self.compute_dtypee, off_value=0)
+        fake_x_oh = tf.math.multiply(fake_x_oh, mask_y)
 
         temp_real_x = self.classifier(real_x,training=False)
-        temp_fake_y = self.classifier(fake_y,training=False)
+        temp_fake_y = self.classifier(fake_y_oh,training=False)
         temp_diff_x = tf.math.subtract(temp_fake_y,temp_real_x)
 
         temp_real_y = self.classifier(real_y ,training=False)
-        temp_fake_x = self.classifier(fake_x,training=False)
+        temp_fake_x = self.classifier(fake_x_oh,training=False)
         temp_diff_y = tf.math.subtract(temp_fake_x,temp_real_y)
 
         self.validation_metrics['temp_diff_x'](temp_diff_x)
@@ -446,14 +455,18 @@ class CycleGan(tf.keras.Model):
 
         # Adding likelihoods to input 
         input_x_real = tf.math.add(real_x, prob_x)
-        fake_y, _ = self.G([input_x_real, W_x], training=False)
+        fake_y, fake_y_sm, fake_y_logits = self.G([input_x_real, W_x], training=False)
 
         #################### Predict temperature ##################
         mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
         fake_y = tf.math.multiply(fake_y, mask_x)
+        # Ensure classifier receives one-hot encoded generated sequences
+        fake_y_int = tf.argmax(fake_y, axis=-1)
+        fake_y_oh = tf.one_hot(fake_y_int, depth=21, dtype=self.compute_dtypee, off_value=0)
+        fake_y_oh = tf.math.multiply(fake_y_oh, mask_x)
 
         temp_real_x = self.classifier(real_x ,training=False)
-        temp_fake_y = self.classifier(fake_y,training=False)
+        temp_fake_y = self.classifier(fake_y_oh,training=False)
 
         seqs_fake = []
         temps_fake = []
@@ -489,14 +502,17 @@ class CycleGan(tf.keras.Model):
 
         # Adding likelihoods to input 
         input_x_real = tf.math.add(real_x, prob_x)
-        fake_y, _ = self.G([input_x_real, W_x], training=False)
+        fake_y, fake_y_sm, fake_y_logits = self.G([input_x_real, W_x], training=False)
 
         #################### Predict temperature ##################
         mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
         fake_y = tf.math.multiply(fake_y, mask_x)
+        fake_y_int = tf.argmax(fake_y, axis=-1)
+        fake_y_oh = tf.one_hot(fake_y_int, depth=21, dtype=self.compute_dtypee, off_value=0)
+        fake_y_oh = tf.math.multiply(fake_y_oh, mask_x)
 
         temp_real_x = self.classifier(real_x ,training=False)
-        temp_fake_y = self.classifier(fake_y,training=False)
+        temp_fake_y = self.classifier(fake_y_oh,training=False)
 
         seqs_fake = []
         temps_fake = []
@@ -533,14 +549,17 @@ class CycleGan(tf.keras.Model):
         # Adding likelihoods to input 
         input_x_real = tf.math.add(real_x, prob_x)
         # Use the softmax output (second return) from G and pick max-likelihood tokens.
-        _, fake_y = self.G([input_x_real, W_x], training=False)
+        _, fake_y, fake_y_logits = self.G([input_x_real, W_x], training=False)
 
         #################### Predict temperature ##################
         mask_x = W_x #tf.repeat(W_x, 21, axis=-1)
         fake_y = tf.math.multiply(fake_y, mask_x)
+        fake_y_int = tf.argmax(fake_y, axis=-1)
+        fake_y_oh = tf.one_hot(fake_y_int, depth=21, dtype=self.compute_dtypee, off_value=0)
+        fake_y_oh = tf.math.multiply(fake_y_oh, mask_x)
 
         temp_real_x = self.classifier(real_x ,training=False)
-        temp_fake_y = self.classifier(fake_y,training=False)
+        temp_fake_y = self.classifier(fake_y_oh,training=False)
 
         seqs_fake = []
         temps_fake = []

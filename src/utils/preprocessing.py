@@ -3,6 +3,8 @@ from Bio import SeqIO
 import os
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
+import glob
+import re
 
 def convert_table(seq, w):    
     aas = 'ACDEFGHIKLMNPQRSTVWYX'
@@ -531,6 +533,17 @@ def load_compact_data_bert(config, data_set,batch_size ):
     base_dir = config[data_set]["base_dir"]
     files_train = os.path.join(base_dir, config[data_set]["train_dir"])
     files_val = os.path.join(base_dir, config[data_set]["val_dir"])
+
+    if "threshold" in config[data_set]:
+        files_train = [
+            f for f in glob.glob(files_train)
+            if float(re.search(r"qmin([0-9.]+)", f).group(1)) >= config[data_set]['threshold']
+        ]
+        files_val = [
+            f for f in glob.glob(files_val)
+            if float(re.search(r"qmin([0-9.]+)", f).group(1)) >= config[data_set]['threshold']
+        ]   
+
     max_length = config[data_set]["max_length"]
     print(max_length)
     seed = int(config.get("seed", 1337))

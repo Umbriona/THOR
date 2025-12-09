@@ -1,5 +1,5 @@
 #! /usr/bin/env python
-import os, sys
+import os, sys, json
 try:
     os.chdir('/ThermalGAN/src/scripts')
 except:
@@ -47,11 +47,15 @@ parser.add_argument('-v', '--verbose', action="store_true",
                    help = "Verbosity")
 parser.add_argument('-g', '--gpu', type=str, choices=['0', '1','0,1'], default='0,1')
 
+parser.add_argument('--store_softmax', action="store_true")
+
 args = parser.parse_args()
 
 REPLICATES=50
 
 def generate(config, model, data):
+
+    
     
     print(f"Making: {REPLICATES} for each sequence")
 
@@ -69,7 +73,24 @@ def generate(config, model, data):
                     #print(f"Writing id: {_id}")
                     f.write(f">{_id}_wt_{rep} {temp_real}\n{real}\n")
                     f.write(f">{_id}_variant_{rep} {temp_fake}\n{fake}\n")
+            
+            if rep == 0:
+                if args.store_softmax:
+                    ids, seqs_real, seqs_fake, temps_real, temps_fake, raw_probs = model.generate_MAX_likelihood_step_bert_inference(batch, return_probs=args.store_softmax)
+                else:
+                    ids, seqs_real, seqs_fake, temps_real, temps_fake = model.generate_MAX_likelihood_step_bert_inference(batch, return_probs=args.store_softmax)
 
+                with open(f"{args.input}/variants_SM_{args.epoch}.fasta", "a") as f:
+                    for _id, real, fake, temp_real, temp_fake in zip(ids, seqs_real, seqs_fake, temps_real, temps_fake):
+                        #print(f"Writing id: {_id}")
+                        f.write(f">{_id}_wt_{rep} {temp_real}\n{real}\n")
+                        f.write(f">{_id}_variant_{rep} {temp_fake}\n{fake}\n")
+                if args.store_softmax:
+                    probs_path = f"{args.input}/softmax_probs_{args.epoch}.jsonl"
+                    with open(probs_path, "a") as prob_file:
+                        for _id, probs in zip(ids, raw_probs):
+                            prob_file.write(json.dumps({"id": _id, "probs": probs}) + "\n")
+                
     return 
 
 

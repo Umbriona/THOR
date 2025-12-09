@@ -62,7 +62,7 @@ def load_fasta_with_meta(fpath: str, default_temp: Optional[float], args=None) -
         try:
             temp=float(rec.description.split()[-1])
         except:
-            temp=float(rec.description.split()[-2])
+            temp=float(0) #float(rec.description.split()[-2])
         records.append((rec.id, seq, temp))
     # sort by length for nicer batching
     records.sort(key=lambda x: len(x[1]), reverse=True)
