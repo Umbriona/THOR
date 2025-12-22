@@ -48,6 +48,18 @@ class CycleGan(tf.keras.Model):
         super(CycleGan, self).__init__(name = name)
         #self.G, self.F, self.D_x, self.D_y = self.load_models(config['CycleGan'])
         
+        # Propagate input dimensionality based on how modalities are merged.
+        # Allow different merge strategies for generators vs discriminators.
+        self.concat_modalities_G = config['CycleGan'].get('concat_modalities_generator',
+                                                         config['CycleGan'].get('concat_modalities', False))
+        self.concat_modalities_D = config['CycleGan'].get('concat_modalities_discriminator',
+                                                         self.concat_modalities_G)
+
+        input_dim_G = 42 if self.concat_modalities_G else 21
+        input_dim_D = 42 if self.concat_modalities_D else 21
+        config['CycleGan']["Generator"]["input_dim"] = input_dim_G
+        config['CycleGan']["Discriminator"]["input_dim"] = input_dim_D
+
         self.G = gan.Generator(config=config['CycleGan']["Generator"])
         self.F = gan.Generator(config=config['CycleGan']["Generator"])
         self.D_x = gan.Discriminator(config=config['CycleGan']["Discriminator"])
@@ -73,16 +85,22 @@ class CycleGan(tf.keras.Model):
         self.lambda_id_F    = tf.Variable(config['CycleGan']['lambda_id'], dtype="float32", trainable=False) 
         self.lambda_self_G  = tf.Variable(1, dtype="float32", trainable=False) 
         self.lambda_self_F  = tf.Variable(1, dtype="float32", trainable=False) 
-        
+
         self.lambda_evo_G   = tf.Variable(config['CycleGan']['lambda_evo_G'], dtype="float32", trainable=False)
         self.lambda_evo_F   = tf.Variable(config['CycleGan']['lambda_evo_F'], dtype="float32", trainable=False)
-        
+
         self.add  = tf.keras.layers.Add()
         
         self.classifier = classifier
 
         self.training_metrics = load_training_metrics()
         self.validation_metrics = load_validation_metrics()
+
+    def _merge_modalities(self, seq, prob, concat_flag):
+        """Merge one-hot sequence and pLLM probabilities either by concat or add."""
+        if concat_flag:
+            return tf.concat([seq, prob], axis=-1)
+        return tf.math.add(seq, prob)
         
     def compile( self, loss_obj, optimizers):
         super(CycleGan, self).compile()
@@ -158,31 +176,36 @@ class CycleGan(tf.keras.Model):
             real_y = real_y * mask_y
 
             # Adding likelihoods to input 
-            input_x_real = tf.math.add(real_x, prob_x)
-            input_y_real = tf.math.add(real_y, prob_y)
+            input_x_real_G = self._merge_modalities(real_x, prob_x, self.concat_modalities_G)
+            input_y_real_G = self._merge_modalities(real_y, prob_y, self.concat_modalities_G)
+
+            input_x_real_D = self._merge_modalities(real_x, prob_x, self.concat_modalities_D)
+            input_y_real_D = self._merge_modalities(real_y, prob_y, self.concat_modalities_D)
 
 
-            fake_y_tmp, fake_y_sm, fake_y_logits = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
+            fake_y_tmp, fake_y_sm, fake_y_logits = self.G([input_x_real_G, mask_x], training=True)   # G:x -> y'
 
             fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
             
-            input_y_fake = tf.math.add(fake_y, prob_x)
-            _, cycled_x, _ = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
+            input_y_fake_G = self._merge_modalities(fake_y, prob_x, self.concat_modalities_G)
+            _, cycled_x, _ = self.F([input_y_fake_G, mask_x], training=True) # Cycle: F:y' -> x
 
-            fake_x_tmp, fake_x_sm, fake_x_logits = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
+            fake_x_tmp, fake_x_sm, fake_x_logits = self.F([input_y_real_G, mask_y], training=True)   # F:y -> x'
             fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
-            input_x_fake = tf.math.add(fake_x, prob_y)
-            _, cycled_y, _ = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
+            input_x_fake_G = self._merge_modalities(fake_x, prob_y, self.concat_modalities_G)
+            _, cycled_y, _ = self.G([input_x_fake_G, mask_y], training=True) # Cycle: G:x' -> y        
 
             # Identity mapping
-            _, same_x, _ = self.F([input_x_real, mask_x], training=True)  #F:x -> x
-            _, same_y, _ = self.G([input_y_real, mask_y], training=True)  #G:y -> y
+            _, same_x, _ = self.F([input_x_real_G, mask_x], training=True)  #F:x -> x
+            _, same_y, _ = self.G([input_y_real_G, mask_y], training=True)  #G:y -> y
             
-            disc_real_x, final_mask_x = self.D_x([input_x_real, mask_x], training=True)
-            disc_real_y, final_mask_y = self.D_y([input_y_real, mask_y], training=True)
+            disc_real_x, final_mask_x = self.D_x([input_x_real_D, mask_x], training=True)
+            disc_real_y, final_mask_y = self.D_y([input_y_real_D, mask_y], training=True)
             
-            disc_fake_x, _ = self.D_x([input_x_fake, mask_y], training=True)
-            disc_fake_y, _ = self.D_y([input_y_fake, mask_x], training=True)
+            input_x_fake_D = self._merge_modalities(fake_x, prob_y, self.concat_modalities_D)
+            input_y_fake_D = self._merge_modalities(fake_y, prob_x, self.concat_modalities_D)
+            disc_fake_x, fake_mask_x = self.D_x([input_x_fake_D, mask_y], training=True)
+            disc_fake_y, fake_mask_y = self.D_y([input_y_fake_D, mask_x], training=True)
 
             gen_G_loss = self.generator_loss_fn(disc_fake_y, final_mask_x)
             gen_F_loss = self.generator_loss_fn(disc_fake_x, final_mask_y)
@@ -216,6 +239,23 @@ class CycleGan(tf.keras.Model):
             loss_D_y = self.discriminator_loss_fn(disc_real_y, disc_fake_y, real_mask=final_mask_y, fake_mask=final_mask_x) 
             loss_D_x = self.discriminator_loss_fn(disc_real_x, disc_fake_x, real_mask=final_mask_x, fake_mask=final_mask_y) 
 
+            eps = tf.keras.backend.epsilon()
+            def _masked_disc_accuracy(logits, label, mask):
+                mask = tf.cast(mask, logits.dtype)
+                preds = tf.cast(logits > 0.0, logits.dtype)
+                labels = tf.ones_like(preds) if label == 1.0 else tf.zeros_like(preds)
+                correct = tf.cast(tf.equal(preds, labels), logits.dtype)
+                correct = correct * mask
+                return tf.reduce_sum(correct) / (tf.reduce_sum(mask) + eps)
+
+            real_acc_x = _masked_disc_accuracy(disc_real_x, 1.0, final_mask_x)
+            real_acc_y = _masked_disc_accuracy(disc_real_y, 1.0, final_mask_y)
+            fake_acc_x = _masked_disc_accuracy(disc_fake_x, 0.0, fake_mask_x)
+            fake_acc_y = _masked_disc_accuracy(disc_fake_y, 0.0, fake_mask_y)
+            disc_real_acc = 0.5 * (real_acc_x + real_acc_y)
+            disc_fake_acc = 0.5 * (fake_acc_x + fake_acc_y)
+            disc_avg_acc = 0.5 * (disc_real_acc + disc_fake_acc)
+
         grads_G_gen = tape.gradient(tot_loss_G, self.G.trainable_variables)
         grads_F_gen = tape.gradient(tot_loss_F, self.F.trainable_variables)
 
@@ -239,6 +279,9 @@ class CycleGan(tf.keras.Model):
         self.training_metrics['loss_disc_x'](loss_D_y)
         self.training_metrics['loss_id_x'](id_G_loss)
         self.training_metrics['loss_id_y'](id_F_loss)
+        self.training_metrics['disc_real_acc'](disc_real_acc)
+        self.training_metrics['disc_fake_acc'](disc_fake_acc)
+        self.training_metrics['disc_avg_acc'](disc_avg_acc)
 
         self.training_metrics['acc_x'](real_x, fake_y, W_x)
         self.training_metrics['acc_y'](real_y, fake_x, W_y)
@@ -281,31 +324,36 @@ class CycleGan(tf.keras.Model):
             real_y = real_y * mask_y
 
             # Adding likelihoods to input 
-            input_x_real = tf.math.add(real_x, prob_x)
-            input_y_real = tf.math.add(real_y, prob_y)
+            input_x_real_G = self._merge_modalities(real_x, prob_x, self.concat_modalities_G)
+            input_y_real_G = self._merge_modalities(real_y, prob_y, self.concat_modalities_G)
+
+            input_x_real_D = self._merge_modalities(real_x, prob_x, self.concat_modalities_D)
+            input_y_real_D = self._merge_modalities(real_y, prob_y, self.concat_modalities_D)
 
 
-            fake_y_tmp, fake_y_sm, fake_y_logits = self.G([input_x_real, mask_x], training=True)   # G:x -> y'
+            fake_y_tmp, fake_y_sm, fake_y_logits = self.G([input_x_real_G, mask_x], training=True)   # G:x -> y'
 
             fake_y = tf.math.multiply(fake_y_tmp, mask_x) # Preserve padding
             
-            input_y_fake = tf.math.add(fake_y, prob_x)
-            _, cycled_x, _ = self.F([input_y_fake, mask_x], training=True) # Cycle: F:y' -> x
+            input_y_fake_G = self._merge_modalities(fake_y, prob_x, self.concat_modalities_G)
+            _, cycled_x, _ = self.F([input_y_fake_G, mask_x], training=True) # Cycle: F:y' -> x
 
-            fake_x_tmp, fake_x_sm, fake_x_logits = self.F([input_y_real, mask_y], training=True)   # F:y -> x'
+            fake_x_tmp, fake_x_sm, fake_x_logits = self.F([input_y_real_G, mask_y], training=True)   # F:y -> x'
             fake_x = tf.math.multiply(fake_x_tmp, mask_y) ##Apply mask
-            input_x_fake = tf.math.add(fake_x, prob_y)
-            _, cycled_y, _ = self.G([input_x_fake, mask_y], training=True) # Cycle: G:x' -> y        
+            input_x_fake_G = self._merge_modalities(fake_x, prob_y, self.concat_modalities_G)
+            _, cycled_y, _ = self.G([input_x_fake_G, mask_y], training=True) # Cycle: G:x' -> y        
 
             # Identity mapping
-            _, same_x, _ = self.F([input_x_real, mask_x], training=True)  #F:x -> x
-            _, same_y, _ = self.G([input_y_real, mask_y], training=True)  #G:y -> y
+            _, same_x, _ = self.F([input_x_real_G, mask_x], training=True)  #F:x -> x
+            _, same_y, _ = self.G([input_y_real_G, mask_y], training=True)  #G:y -> y
             
-            disc_real_x, final_mask_x = self.D_x([input_x_real, mask_x], training=True)
-            disc_real_y, final_mask_y = self.D_y([input_y_real, mask_y], training=True)
+            disc_real_x, final_mask_x = self.D_x([input_x_real_D, mask_x], training=True)
+            disc_real_y, final_mask_y = self.D_y([input_y_real_D, mask_y], training=True)
             
-            disc_fake_x, _ = self.D_x([input_x_fake, mask_y], training=True)
-            disc_fake_y, _ = self.D_y([input_y_fake, mask_x], training=True)
+            input_x_fake_D = self._merge_modalities(fake_x, prob_y, self.concat_modalities_D)
+            input_y_fake_D = self._merge_modalities(fake_y, prob_x, self.concat_modalities_D)
+            disc_fake_x, _ = self.D_x([input_x_fake_D, mask_y], training=True)
+            disc_fake_y, _ = self.D_y([input_y_fake_D, mask_x], training=True)
 
             gen_G_loss = self.generator_loss_fn(disc_fake_y, final_mask_x)
             gen_F_loss = self.generator_loss_fn(disc_fake_x, final_mask_y)
@@ -390,8 +438,8 @@ class CycleGan(tf.keras.Model):
 
         ############################
 
-        input_x_real = tf.math.add(real_x, prob_x)
-        input_y_real = tf.math.add(real_y, prob_y)
+        input_x_real = self._merge_modalities(real_x, prob_x, self.concat_modalities_G)
+        input_y_real = self._merge_modalities(real_y, prob_y, self.concat_modalities_G)
         
         fake_y, fake_y_sm, fake_y_logits = self.G([input_x_real, W_x], training=False)
         fake_x, fake_x_sm, fake_x_logits = self.F([input_y_real, W_y], training=False)
@@ -454,7 +502,7 @@ class CycleGan(tf.keras.Model):
         ############################
 
         # Adding likelihoods to input 
-        input_x_real = tf.math.add(real_x, prob_x)
+        input_x_real = self._merge_modalities(real_x, prob_x, self.concat_modalities_G)
         fake_y, fake_y_sm, fake_y_logits = self.G([input_x_real, W_x], training=False)
 
         #################### Predict temperature ##################
@@ -501,7 +549,7 @@ class CycleGan(tf.keras.Model):
         ############################
 
         # Adding likelihoods to input 
-        input_x_real = tf.math.add(real_x, prob_x)
+        input_x_real = self._merge_modalities(real_x, prob_x, self.concat_modalities_G)
         fake_y, fake_y_sm, fake_y_logits = self.G([input_x_real, W_x], training=False)
 
         #################### Predict temperature ##################
@@ -547,7 +595,7 @@ class CycleGan(tf.keras.Model):
         ############################
 
         # Adding likelihoods to input 
-        input_x_real = tf.math.add(real_x, prob_x)
+        input_x_real = self._merge_modalities(real_x, prob_x, self.concat_modalities_G)
         # Use the softmax output (second return) from G and pick max-likelihood tokens.
         _, fake_y, fake_y_logits = self.G([input_x_real, W_x], training=False)
 

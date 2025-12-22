@@ -80,6 +80,9 @@ def load_training_metrics():
     metrics['loss_disc_x']  = tf.keras.metrics.Mean('loss_disc_x', dtype=tf.float32)
     metrics['loss_id_x']  = tf.keras.metrics.Mean('loss_id_x', dtype=tf.float32)
     metrics['loss_id_y']  = tf.keras.metrics.Mean('loss_id_y', dtype=tf.float32)
+    metrics['disc_real_acc']  = tf.keras.metrics.Mean('disc_real_acc', dtype=tf.float32)
+    metrics['disc_fake_acc']  = tf.keras.metrics.Mean('disc_fake_acc', dtype=tf.float32)
+    metrics['disc_avg_acc']   = tf.keras.metrics.Mean('disc_avg_acc', dtype=tf.float32)
 
     metrics['temp_diff_x']  = tf.keras.metrics.Mean('temp_diff_x', dtype=tf.float32)
     metrics['temp_diff_y']  = tf.keras.metrics.Mean('temp_diff_y', dtype=tf.float32)

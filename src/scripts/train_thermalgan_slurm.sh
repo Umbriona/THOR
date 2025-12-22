@@ -10,7 +10,7 @@
 # Directory definitions
 SRC_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN
 
-DATA_DIR=${SRC_DIR}/data/THOR_BIG #Different_target_identity #Different_target_identity #Experiment_11137_thermo
+DATA_DIR=${SRC_DIR}/data/THOR_HUGE #Different_target_identity #Different_target_identity #Experiment_11137_thermo
 #TMP_DATA_DIR=$TMPDIR/data/Different_target_identity
 #mkdir -p $TMP_DATA_DIR
 #rsync -aP $DATA_DIR/$TMP_DATA_DIR

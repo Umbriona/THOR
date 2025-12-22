@@ -575,7 +575,8 @@ class AbsolutePositionalEmbedding(tf.keras.layers.Layer):
         return config
 
 def Generator(norm="layer", config=None):
-    inputs = tf.keras.layers.Input(shape=[512, 21])
+    input_dim = config.get("input_dim", 21)
+    inputs = tf.keras.layers.Input(shape=[512, input_dim])
     mask = tf.keras.layers.Input(shape=[512, 1])
 
     filters_down_stack = config["filters_down_stack"] 
@@ -659,7 +660,8 @@ def Discriminator(norm="layer", config = None):
     filters = config["filters"] 
     initializer = tf.random_normal_initializer(0., 0.02)
 
-    inp = tf.keras.layers.Input(shape=[512, 21], name='input_image')
+    input_dim = config.get("input_dim", 21)
+    inp = tf.keras.layers.Input(shape=[512, input_dim], name='input_image')
     x = inp
     mask_input = tf.keras.layers.Input(shape=[512, 1], name='input_mask')
     mask = tf.cast(mask_input, x.dtype)

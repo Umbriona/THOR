@@ -21,5 +21,5 @@ IMAGE=${SRC_DIR}/env/singularity/test_6.sif # thermalgan.sif
 time singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${SRC_DIR}:/ThermalGAN, \
---nv ${IMAGE}  python predict_OGT_from_fasta.py /data/wildtypes.fasta /data/wildtypes_TM.fasta
+--nv ${IMAGE}  python predict_OGT_from_fasta.py /data/best_variants_70.fasta /data/best_variants_70_TM.fasta
 #done

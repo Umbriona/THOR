@@ -3,18 +3,18 @@
 #SBATCH --account=NAISS2025-22-904
 #SBATCH --gres=gpu:A40:1
 #SBATCH --time=0-06:30:00
-#SBATCH --array=1-10
+
 # Directory definitions
 SRC_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN
 
-DATA_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/THOR_BIG/results/20251125-162825config_46.yaml/split_variants_39 #Experiment_11137_thermo
+DATA_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/Design_ProteinMPNN #Experiment_11137_thermo
 
-RESULT=${DATA_DIR}/variants_39_1_part${SLURM_ARRAY_TASK_ID}.pkl
+RESULT=${DATA_DIR}/best_variants_70_TM.pkl
 
 IMAGE=${SRC_DIR}/env/singularity/pytorch_transformer.sif # thermalgan.sif
 
 #INPUT=/data/fasta/train_IMG20_2025_05_31/train_IMG20_2025_05_31_${SLURM_ARRAY_TASK_ID}.fasta
-INPUT=${DATA_DIR}/variants_39_1_part${SLURM_ARRAY_TASK_ID}.fasta
+INPUT=${DATA_DIR}/best_variants_70_TM.fasta
 
  
 
