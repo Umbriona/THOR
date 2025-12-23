@@ -28,7 +28,7 @@ From:  /apps/containers/TensorFlow/TensorFlow-2.13.0-NGC-23.09.sif #continuumio/
 	# Install all packages from the provided spec file into the global conda env
 	# /opt/conda/bin/conda env update --name base --file thermal.yaml   
 	python3 -m pip install --upgrade pip
-        pip install biopython
+	pip install biopython
 	pip install pandas
 	#pip install tensorflow-addons==0.13.0
 	#pip install tensorflow==2.13
@@ -36,11 +36,24 @@ From:  /apps/containers/TensorFlow/TensorFlow-2.13.0-NGC-23.09.sif #continuumio/
 	pip install tensorflow-probability==0.11.0
 	pip install PyYAML
 	pip install tifffile==2021.8.8
-	pip install typeguard==2.12.1            
+	pip install typeguard==2.12.1
 	pip install matplotlib
 	pip install scikit-learn
 	pip install simple_pid
 	pip install tensorboard-plugin-profile==2.13.0
+	# PyTorch + extras (CUDA 11.8 wheels for NGC TF 23.09 base)
+	pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --extra-index-url https://download.pytorch.org/whl/cu118
+	# HuggingFace stack for ESM
+	pip install transformers==4.41.2 tokenizers==0.19.1 huggingface-hub==0.23.2 tqdm
+	# Ensure cuDNN >= 8.9 to match TF build (TF 2.13 binary expects 8.9.5)
+	pip install nvidia-cudnn-cu11==8.9.5.30
+	CUDNN_PATH=$(python3 - <<'PY'
+import nvidia.cudnn, os
+print(os.path.join(os.path.dirname(nvidia.cudnn.__file__), "lib"))
+PY
+)
+	echo "export LD_LIBRARY_PATH=${CUDNN_PATH}:\$LD_LIBRARY_PATH" >> /environment
+	echo "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH" >> /environment
 
                         #/opt/conda/bin/conda install -y --file thermal_env.yaml
                        # /opt/conda/bin/conda install -c bioconda biopython

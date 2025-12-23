@@ -54,7 +54,8 @@ From: pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
         "rich>=13.7.0" \
         "tqdm>=4.66.0" \
         "numpy>=1.26.0" \
-        "pandas>=2.1.0"
+        "pandas>=2.1.0" \
+        "typeguard"
 
     # Optional (nice to have)
     /opt/conda/bin/pip install --no-cache-dir \
