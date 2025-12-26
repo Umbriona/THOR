@@ -17,7 +17,7 @@ SRC_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN
 IMAGE=${SRC_DIR}/env/singularity/thermalgan-image1.2.sif #thermalgan-image1.sif
 
 # Trained run directory containing config.yaml and weights/epoch_<n>/
-RUN_DIR=${SRC_DIR}/data/THOR_HUGE/results/20251219-123030config_71.yaml #20251218-225521config_67.yaml #20251218-225520config_64.yaml
+RUN_DIR=${SRC_DIR}/data/THOR_HUGE/results/20251218-225521config_67.yaml #20251218-225521config_67.yaml #20251218-225520config_64.yaml
 # Input FASTA to score (temperature can be last token in header, optional)
 FASTA=${SRC_DIR}/data/fasta/MDH_test/MDH.fasta #PETase/PETases.fasta
 # Where to drop generated FASTA/JSONL (defaults to RUN_DIR if left empty)
@@ -25,7 +25,7 @@ OUTPUT_DIR=${RUN_DIR}
 
 # Generation knobs
 EPOCH=39                        # which epoch under RUN_DIR/weights/ to load
-REPLICATES=5                    # variants per input sequence
+REPLICATES=10                    # variants per input sequence
 TEMPERATURE=1                 # sampling temperature
 STORE_SOFTMAX=--store_softmax   # set to empty string "" to skip JSONL
 GPU_ID=0                        # passed to --gpu inside the container
@@ -61,4 +61,6 @@ singularity exec \
     --filter_opt_cycles ${OPTIMISATION_CYCLES} \
     ${ESM_BF16} \
     --name ${NAME} \
-    ${STORE_SOFTMAX}
+    ${STORE_SOFTMAX} \
+    --esm_init_mode random \
+    --esm_random_mask_prob 0.15 \

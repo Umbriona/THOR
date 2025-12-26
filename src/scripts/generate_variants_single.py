@@ -39,6 +39,7 @@ from utils import models_classifyer as models_class
 from data_processing.compute_MLM_features_quantized_tfrecord import (  # noqa: E501
     AA20,
     compute_single_mode_fast,
+    compute_random_partition_mode,
     load_fasta_with_meta,
 )
 
@@ -67,6 +68,13 @@ def parse_args():
     parser.add_argument("--max_length", type=int, default=1022, help="Max length passed to tokenizer (ESM side)")
     parser.add_argument("--gpu", type=str, default="0", help="CUDA_VISIBLE_DEVICES for TensorFlow/GAN")
     parser.add_argument("--esm_bf16", action="store_true", help="Use bfloat16 autocast for ESM (GPU only)")
+    parser.add_argument("--esm_init_mode", choices=["single", "random"], default="single",
+                        help="ESM mode for initial generator features (single-mask or random-partition)")
+    parser.add_argument("--esm_random_mask_prob", type=float, default=0.15,
+                        help="Mask probability for random-partition ESM init")
+    parser.add_argument("--esm_random_chunk", type=int, default=8,
+                        help="Number of masked chunks per batch for random-partition ESM init")
+    parser.add_argument("--esm_random_seed", type=int, default=42, help="Seed for random-partition ESM init")
     parser.add_argument("--esm_filter_threshold", type=float, default=None,
                         help="ESM per-position NLL threshold; substitutions above this are reverted to WT")
     parser.add_argument("--skip_optimize", action="store_true",
@@ -319,6 +327,24 @@ def run_esm(tokenizer, model, ids, seqs, temps, args):
     )
 
 
+def run_esm_random(tokenizer, model, ids, seqs, temps, args):
+    return compute_random_partition_mode(
+        model=model,
+        tokenizer=tokenizer,
+        ids=ids,
+        seqs=seqs,
+        temps=temps,
+        max_length=args.max_length,
+        device=model.device,
+        aa_token_ids=tokenizer.convert_tokens_to_ids(list(AA20)),
+        mask_prob=args.esm_random_mask_prob,
+        chunk_batch=args.esm_random_chunk,
+        pad_token_id=tokenizer.pad_token_id,
+        mask_token_id=tokenizer.mask_token_id,
+        seed=args.esm_random_seed,
+    )
+
+
 def one_hot_encode_for_ogt(seqs: List[str], max_len: int = 512) -> np.ndarray:
     x = np.zeros((len(seqs), max_len, len(OGT_ALPHABET)), dtype=np.float32)
     for i, seq in enumerate(seqs):
@@ -415,11 +441,19 @@ def main():
 
     fasta_ids, seqs, temps = load_fasta_with_meta(args.fasta, default_temp=None, args=args)
     wt_seq_map = {rid: seq for rid, seq in zip(fasta_ids, seqs)}
-    print("[info] Computing per-position ESM probabilities for wildtypes...")
-    wt_results = run_esm(tokenizer, model, fasta_ids, seqs, temps, args)
+    # ESM for generator features (single-mask or random-partition) and for metrics
+    if args.esm_init_mode == "random":
+        print(f"[info] Computing ESM random-partition features for generator (mask_prob={args.esm_random_mask_prob})...")
+        feature_results = run_esm_random(tokenizer, model, fasta_ids, seqs, temps, args)
+        print("[info] Computing per-position single-mask ESM probabilities for metrics...")
+        wt_results = run_esm(tokenizer, model, fasta_ids, seqs, temps, args)
+    else:
+        print("[info] Computing per-position ESM probabilities for wildtypes (single-mask)...")
+        wt_results = run_esm(tokenizer, model, fasta_ids, seqs, temps, args)
+        feature_results = wt_results
     print("[info] ESM probabilities computed for wildtypes.")
 
-    seq_ids_np, prob_q_np, fasta_ids, temps = encode_sequences(fasta_ids, seqs, wt_results)
+    seq_ids_np, prob_q_np, fasta_ids, temps = encode_sequences(fasta_ids, seqs, feature_results)
 
     # Build generator and load weights
     generator, concat_modalities = build_generator(config)
@@ -460,6 +494,9 @@ def main():
     # Sampled variants
     print("[info] Sampling variants...")
     variant_samples = sample_from_log_probs(log_probs_tf, mask, args.replicates)
+    # Also keep a maximum-likelihood variant (argmax) per sequence for the initial generator pass
+    variant_argmax_ids = argmax_from_log_probs(log_probs_tf, mask)
+    variant_argmax_seqs = sequences_from_ids(variant_argmax_ids, mask_np)
     variant_records: List[Dict] = []
     for rep_idx, sample_ids in enumerate(variant_samples):
         sample_seqs = sequences_from_ids(sample_ids, mask_np)
@@ -476,6 +513,20 @@ def main():
                 "g_sub_nll": g_sub,
                 "identity_to_wt": compute_identity(sample_seqs[i], wt_seq_map[rid]),
             })
+    # Max-likelihood variants (rep_max)
+    for i, rid in enumerate(fasta_ids):
+        g_global, g_sub = compute_generator_nll(variant_argmax_ids[i], log_probs_np[i], mask_np[i], wt_ids=seq_ids_np[i])
+        variant_records.append({
+            "label": f"{rid}_variant_rep_max",
+            "base_id": rid,
+            "rep": "max",
+            "kind": "sampled",
+            "seq": variant_argmax_seqs[i],
+            "temp": temps[i],
+            "g_global_nll": g_global,
+            "g_sub_nll": g_sub,
+            "identity_to_wt": compute_identity(variant_argmax_seqs[i], wt_seq_map[rid]),
+        })
 
     # ESM metrics for sampled variants
     print("[info] Computing ESM probabilities for sampled variants...")
