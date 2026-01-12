@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """
-Generate ThermalGAN variants for a small FASTA by computing ESM per-position
-likelihoods inline and running the trained generator G. Emits generator/ESM NLL
-metrics, predicted OGT, and supports optional ESM-based filtering + argmax
-optimization.
+Generate ThermalGAN variants for a small FASTA or single sequence by computing
+ESM per-position likelihoods inline and running the trained generator G. Emits
+generator/ESM NLL metrics, predicted OGT, and supports optional ESM-based
+filtering + argmax optimization.
 """
 import argparse
 import json
@@ -38,9 +38,11 @@ from utils import models_gan_atte as gan
 from utils import models_classifyer as models_class
 from data_processing.compute_MLM_features_quantized_tfrecord import (  # noqa: E501
     AA20,
+    clean_seq,
     compute_single_mode_fast,
     compute_random_partition_mode,
     load_fasta_with_meta,
+    to_protbert,
 )
 
 
@@ -53,9 +55,13 @@ OGT_AA_TO_IDX = {aa: i for i, aa in enumerate(OGT_ALPHABET)}
 
 
 def parse_args():
-    parser = argparse.ArgumentParser("Generate ThermalGAN variants from FASTA (ESM inline)")
+    parser = argparse.ArgumentParser("Generate ThermalGAN variants from FASTA or single sequence (ESM inline)")
     parser.add_argument("--run_dir", required=True, help="Run directory holding config.yaml and weights/")
-    parser.add_argument("--fasta", required=True, help="Input FASTA with optional temp in header")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--fasta", help="Input FASTA with optional temp in header")
+    input_group.add_argument("--sequence", help="Input single protein sequence (string)")
+    parser.add_argument("--seq_id", default="query", help="Identifier for --sequence input")
+    parser.add_argument("--seq_temp", type=float, default=None, help="Optional temperature metadata for --sequence input")
     parser.add_argument("--epoch", type=int, default=1999, help="Epoch to load from run_dir/weights/epoch_{n}")
     parser.add_argument("--output_dir", default=None, help="Where to write FASTA/JSONL outputs (default: run_dir)")
     parser.add_argument("--name", default=None, help="Optional prefix for output files")
@@ -92,7 +98,9 @@ def parse_args():
     parser.add_argument("--ogt_max_len", type=int, default=512, help="Max length for OGT predictor padding")
     parser.add_argument("--skip_ogt", action="store_true", help="Disable OGT prediction step")
     parser.add_argument("--filter_opt_cycles", type=int, default=1,
-                        help="Number of filter+optimize cycles to run (>=1). Only the last cycle's optimized outputs are kept.")
+                        help="Number of filter+optimize cycles to run (>=0). Only the last cycle's optimized outputs are kept.")
+    parser.add_argument("--sampling_cycles", type=int, default=0,
+                        help="Number of additional filter+sample cycles before optimization; only the first sampling cycle draws multiple replicates.")
     return parser.parse_args()
 
 
@@ -100,6 +108,17 @@ def load_config(run_dir: Path) -> Dict:
     cfg_path = run_dir / "config.yaml"
     with open(cfg_path, "r") as fh:
         return yaml.load(fh, Loader=yaml.FullLoader)
+
+
+def load_input_sequences(args) -> Tuple[List[str], List[str], List[Optional[float]]]:
+    if args.sequence:
+        seq = clean_seq(args.sequence)
+        if args.hf_model.split("/")[-1] in ["prot_bert", "prot_bert_bfd"]:
+            seq = to_protbert(seq)
+        if not seq:
+            raise ValueError("Provided --sequence is empty after cleaning.")
+        return [args.seq_id], [seq], [args.seq_temp]
+    return load_fasta_with_meta(args.fasta, default_temp=None, args=args)
 
 
 def quantize_and_pad_probs(probs: np.ndarray) -> np.ndarray:
@@ -270,9 +289,21 @@ def write_outputs(out_dir: Path, epoch: int, records: List[Dict], store_softmax:
     prefix = f"{name_prefix}_" if name_prefix else ""
     fasta_path = out_dir / f"{prefix}variants_epoch_{epoch}.fasta"
     kind_order = {"wt": 0, "sampled": 1, "filtered": 2, "optimized": 3}
+    def rep_sort_value(rep):
+        if isinstance(rep, int):
+            return (0, rep)
+        try:
+            return (0, int(rep))
+        except Exception:
+            return (1, str(rep))
     records_sorted = sorted(
         records,
-        key=lambda r: (r.get("base_id", ""), kind_order.get(r.get("kind", ""), 99), r.get("rep", 0), r.get("label", "")),
+        key=lambda r: (
+            r.get("base_id", ""),
+            kind_order.get(r.get("kind", ""), 99),
+            rep_sort_value(r.get("rep", "")),
+            r.get("label", ""),
+        ),
     )
 
     with open(fasta_path, "w") as fh:
@@ -439,7 +470,7 @@ def main():
     model = model.to(device)
     print(f"[info] ESM model on device: {device}")
 
-    fasta_ids, seqs, temps = load_fasta_with_meta(args.fasta, default_temp=None, args=args)
+    fasta_ids, seqs, temps = load_input_sequences(args)
     wt_seq_map = {rid: seq for rid, seq in zip(fasta_ids, seqs)}
     # ESM for generator features (single-mask or random-partition) and for metrics
     if args.esm_init_mode == "random":
@@ -540,14 +571,111 @@ def main():
 
     records.extend(variant_records)
 
+    current_records = variant_records
+    current_results = variant_results
+    sampling_final: List[Dict] = []
+    wt_idx_map = {rid: idx for idx, rid in enumerate(fasta_ids)} if args.esm_filter_threshold is not None else {}
+
+    # Optional filtering + sampling cycles before optimization
+    if args.esm_filter_threshold is not None and args.sampling_cycles > 0:
+        sampling_cycles = max(1, args.sampling_cycles)
+        for cycle_idx in range(sampling_cycles):
+            print(f"[info] Sampling+filter cycle {cycle_idx+1}/{sampling_cycles}...")
+            filtered_records: List[Dict] = []
+            filtered_ids = []
+            filtered_seqs = []
+            filtered_temps = []
+
+            for rec in current_records:
+                probs = current_results[rec["label"]]["probs"]
+                wt_seq = wt_seq_map[rec["base_id"]]
+                filt_seq, reverted = filter_bad_mutations(rec["seq"], wt_seq, probs, args.esm_filter_threshold)
+                filt_label = f"{rec['label']}_filtered"
+                filtered_records.append({
+                    "label": filt_label,
+                    "base_id": rec["base_id"],
+                    "rep": rec["rep"],
+                    "kind": "filtered",
+                    "seq": filt_seq,
+                    "temp": rec["temp"],
+                    "filter_threshold": args.esm_filter_threshold,
+                    "reverted_positions": reverted,
+                    "identity_to_wt": compute_identity(filt_seq, wt_seq),
+                })
+                filtered_ids.append(filt_label)
+                filtered_seqs.append(filt_seq)
+                filtered_temps.append(rec["temp"])
+
+            if not filtered_records:
+                print("[warn] No records after sampling filter; stopping sampling cycles.")
+                break
+
+            filtered_results = run_esm_for_records(filtered_records, tokenizer, model, args)
+            for rec in filtered_records:
+                res = filtered_results[rec["label"]]
+                esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
+                rec["esm_global_nll"] = esm_global
+                rec["esm_sub_nll"] = esm_sub
+
+            filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(filtered_ids, filtered_seqs, filtered_results)
+            f_gen_inp, f_mask = prepare_generator_inputs(filt_seq_ids_np, filt_prob_q_np, concat_modalities)
+            f_log_probs_tf, _ = run_generator(generator, f_gen_inp, f_mask, args.temperature)
+            f_log_probs_np = f_log_probs_tf.numpy()
+            f_mask_np = np.squeeze(f_mask.numpy(), axis=-1)
+
+            for idx, rec in enumerate(filtered_records):
+                wt_ids = seq_ids_np[wt_idx_map[rec["base_id"]]]
+                g_global, g_sub = compute_generator_nll(filt_seq_ids_np[idx], f_log_probs_np[idx], f_mask_np[idx], wt_ids=wt_ids)
+                rec["g_global_nll"] = g_global
+                rec["g_sub_nll"] = g_sub
+
+            sample_reps = args.replicates if cycle_idx == 0 else 1
+            sampled_records: List[Dict] = []
+            sampled_results = {}
+            sampled_ids_all = sample_from_log_probs(f_log_probs_tf, f_mask, sample_reps)
+            for rep_idx, sample_ids in enumerate(sampled_ids_all):
+                sample_seqs = sequences_from_ids(sample_ids, f_mask_np)
+                for i, filt_rec in enumerate(filtered_records):
+                    wt_ids = seq_ids_np[wt_idx_map[filt_rec["base_id"]]]
+                    g_global, g_sub = compute_generator_nll(sample_ids[i], f_log_probs_np[i], f_mask_np[i], wt_ids=wt_ids)
+                    sample_label = f"{filt_rec['label']}_samp{cycle_idx+1}_rep{rep_idx}"
+                    sample_rep = f"{filt_rec['rep']}_s{cycle_idx+1}_rep{rep_idx}"
+                    sampled_records.append({
+                        "label": sample_label,
+                        "base_id": filt_rec["base_id"],
+                        "rep": sample_rep,
+                        "kind": "sampled",
+                        "seq": sample_seqs[i],
+                        "temp": filt_rec["temp"],
+                        "filter_threshold": args.esm_filter_threshold,
+                        "g_global_nll": g_global,
+                        "g_sub_nll": g_sub,
+                        "identity_to_wt": compute_identity(sample_seqs[i], wt_seq_map[filt_rec["base_id"]]),
+                    })
+
+            if sampled_records:
+                sampled_results = run_esm_for_records(sampled_records, tokenizer, model, args)
+                for rec in sampled_records:
+                    res = sampled_results[rec["label"]]
+                    esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
+                    rec["esm_global_nll"] = esm_global
+                    rec["esm_sub_nll"] = esm_sub
+
+            records.extend(filtered_records)
+            records.extend(sampled_records)
+            current_records = sampled_records
+            current_results = sampled_results
+            sampling_final = sampled_records
+
+            if not current_records:
+                print("[warn] No sampled records after cycle; stopping sampling cycles.")
+                break
+
     # Optional filtering + optimization cycles
     filtered_final: List[Dict] = []
     opt_final: List[Dict] = []
-    if args.esm_filter_threshold is not None:
-        wt_idx_map = {rid: idx for idx, rid in enumerate(fasta_ids)}
-        current_records = variant_records
-        current_results = variant_results
-        cycles = max(1, args.filter_opt_cycles)
+    if args.esm_filter_threshold is not None and current_records:
+        cycles = max(0, args.filter_opt_cycles)
         for cycle_idx in range(cycles):
             print(f"[info] Filter/optimize cycle {cycle_idx+1}/{cycles}...")
             filtered_records: List[Dict] = []
@@ -565,12 +693,12 @@ def main():
                     "base_id": rec["base_id"],
                     "rep": rec["rep"],
                     "kind": "filtered",
-                "seq": filt_seq,
-                "temp": rec["temp"],
-                "filter_threshold": args.esm_filter_threshold,
-                "reverted_positions": reverted,
-                "identity_to_wt": compute_identity(filt_seq, wt_seq),
-            })
+                    "seq": filt_seq,
+                    "temp": rec["temp"],
+                    "filter_threshold": args.esm_filter_threshold,
+                    "reverted_positions": reverted,
+                    "identity_to_wt": compute_identity(filt_seq, wt_seq),
+                })
                 filtered_ids.append(filt_label)
                 filtered_seqs.append(filt_seq)
                 filtered_temps.append(rec["temp"])
@@ -648,6 +776,8 @@ def main():
     # Final safety filter after last optimization cycle
     if args.esm_filter_threshold is not None:
         final_targets = opt_final if opt_final else filtered_final
+        if not final_targets:
+            final_targets = sampling_final if sampling_final else current_records
         if final_targets:
             print("[info] Applying final post-optimization filtering...")
             wt_idx_map = {rid: idx for idx, rid in enumerate(fasta_ids)}

@@ -19,7 +19,7 @@ IMAGE=${SRC_DIR}/env/singularity/thermalgan-image1.2.sif #thermalgan-image1.sif
 # Trained run directory containing config.yaml and weights/epoch_<n>/
 RUN_DIR=${SRC_DIR}/data/THOR_HUGE/results/20251218-225521config_67.yaml #20251218-225521config_67.yaml #20251218-225520config_64.yaml
 # Input FASTA to score (temperature can be last token in header, optional)
-FASTA=${SRC_DIR}/data/fasta/MDH_test/MDH.fasta #PETase/PETases.fasta
+FASTA=${SRC_DIR}/data/fasta/PETase/PETases.fasta #PETase/PETases.fasta
 # Where to drop generated FASTA/JSONL (defaults to RUN_DIR if left empty)
 OUTPUT_DIR=${RUN_DIR}
 
@@ -30,11 +30,11 @@ TEMPERATURE=1                 # sampling temperature
 STORE_SOFTMAX=--store_softmax   # set to empty string "" to skip JSONL
 GPU_ID=0                        # passed to --gpu inside the container
 ESM_DEVICE=cuda                 # set to cuda to score ESM on GPU (uses more memory)
-BATCH_TOKENS=6000               # reduce if you hit OOM
+BATCH_TOKENS=20000               # reduce if you hit OOM
 ESM_BF16=                      # set to "--esm_bf16" to enable bfloat16 autocast
 NLL_THREASHOLD=3
 OPTIMISATION_CYCLES=1
-NAME=MDH
+NAME=PET_10
 ########################
 # Bind mounts
 ########################
@@ -59,6 +59,7 @@ singularity exec \
     --batch_tokens ${BATCH_TOKENS} \
     --esm_filter_threshold ${NLL_THREASHOLD} \
     --filter_opt_cycles ${OPTIMISATION_CYCLES} \
+    --sampling_cycles 0 \
     ${ESM_BF16} \
     --name ${NAME} \
     ${STORE_SOFTMAX} \
