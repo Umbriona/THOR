@@ -403,9 +403,9 @@ def build_ogt_ensemble(config_path: str, weights_paths: List[str]) -> tf.keras.M
 
     print("Built OGT regression")
 
-    model1.load_weights(weights_paths[0]).expect_partial()
-    model2.load_weights(weights_paths[1]).expect_partial()
-    model3.load_weights(weights_paths[2]).expect_partial()
+    model1.load_weights(weights_paths[0], skip_mismatch=False)
+    model2.load_weights(weights_paths[1], skip_mismatch=False)
+    model3.load_weights(weights_paths[2], skip_mismatch=False)
 
     print("Loaded OGT regression weights")
 
