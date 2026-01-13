@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import sys
+import gc
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -827,6 +828,10 @@ def main():
     records = [rec for rec in records if rec.get("kind") not in {"filtered", "optimized"}]  # drop prior filtered/opt
     records.extend(filtered_final)
     records.extend(opt_final)
+
+    tf.keras.backend.clear_session()
+    del generator
+    gc.collect()
 
     # OGT prediction
     if args.skip_ogt:
