@@ -628,7 +628,7 @@ def Generator(norm="layer", config=None):
     if "input_projection" in config:
         x = tf.keras.layers.Conv1D(filters_down_stack[0], 1,strides=1, padding='same', activation='linear')(x)
     #x = pos_emb(x, mask)
-    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=x.shape[-1], name="gen_pos_emb")(x)
+    x = AbsolutePositionalEmbedding(max_length=512, embedding_dim=x.shape[-1], name="gen_pos_emb")(x, mask)
     # Downsampling through the model
     skips = []
     for down, res in zip(down_stack, down_res_stack):

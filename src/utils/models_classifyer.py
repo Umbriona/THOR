@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
+#import tensorflow_addons as tfa
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Conv1D, Dense, Flatten, Activation, Embedding, Input, LeakyReLU, LayerNormalization, BatchNormalization, Softmax, Dropout, Concatenate
 from utils.layers_new import SelfAttention, SelfAttentionSN, ResMod, GumbelSoftmax, ResModPreActSN
@@ -413,8 +413,8 @@ def get_classifier(config, vocab):
         norm_up_down = [LayerNormalization(axis = -1, epsilon = 1e-6) for i in range(down_sample+1)]
     elif norm == "Batch":
         norm_up_down = [BatchNormalization() for i in range(down_sample*2)]
-    elif norm == "Instance":
-        norm_up_down = [tfa.layers.InstanceNormalization() for i in range(down_sample*2)]
+    #elif norm == "Instance":
+    #    norm_up_down = [tfa.layers.InstanceNormalization() for i in range(down_sample*2)]
 
     pool = tf.keras.layers.GlobalAveragePooling1D(data_format='channels_last')
 

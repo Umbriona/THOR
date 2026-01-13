@@ -1,5 +1,5 @@
 import tensorflow as tf
-import tensorflow_addons as tfa
+#import tensorflow_addons as tfa
 from tensorflow.keras.constraints import Constraint
 from tensorflow.keras.layers import Layer, Conv1D, BatchNormalization, LayerNormalization, Add, Concatenate, LeakyReLU, ReLU, Softmax, Dropout
 from tensorflow.keras.regularizers import L1L2
