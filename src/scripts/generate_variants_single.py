@@ -63,7 +63,7 @@ def parse_args():
     input_group.add_argument("--sequence", help="Input single protein sequence (string)")
     parser.add_argument("--seq_id", default="query", help="Identifier for --sequence input")
     parser.add_argument("--seq_temp", type=float, default=None, help="Optional temperature metadata for --sequence input")
-    parser.add_argument("--epoch", type=int, default=1999, help="Epoch to load from run_dir/weights/epoch_{n}")
+    parser.add_argument("--weights", type=int, default=1999, help="Generator weights")
     parser.add_argument("--output_dir", default=None, help="Where to write FASTA/JSONL outputs (default: run_dir)")
     parser.add_argument("--name", default=None, help="Optional prefix for output files")
     parser.add_argument("--replicates", type=int, default=1, help="Number of variants per input sequence")
@@ -283,12 +283,12 @@ def compute_identity(seq: str, wt_seq: str) -> Optional[float]:
     return 100.0 * matches / len(wt_seq)
 
 
-def write_outputs(out_dir: Path, epoch: int, records: List[Dict], store_softmax: bool,
+def write_outputs(out_dir: Path, records: List[Dict], store_softmax: bool,
                   base_softmax: Optional[np.ndarray], mask_np: Optional[np.ndarray], fasta_ids: List[str],
                   name_prefix: Optional[str] = None):
     out_dir.mkdir(parents=True, exist_ok=True)
     prefix = f"{name_prefix}_" if name_prefix else ""
-    fasta_path = out_dir / f"{prefix}variants_epoch_{epoch}.fasta"
+    fasta_path = out_dir / f"{prefix}_variants.fasta"
     kind_order = {"wt": 0, "sampled": 1, "filtered": 2, "optimized": 3}
     def rep_sort_value(rep):
         if isinstance(rep, int):
@@ -489,7 +489,7 @@ def main():
 
     # Build generator and load weights
     generator, concat_modalities = build_generator(config)
-    weight_path = run_dir / "weights" / f"epoch_{args.epoch}" / "generator_G.h5"
+    weight_path = run_dir / args.weights / "generator_G.h5"
     print(f"[info] Loading generator weights from: {weight_path}")
     generator.load_weights(weight_path)
 
@@ -847,7 +847,7 @@ def main():
 
 
     # Write outputs (final)
-    write_outputs(output_dir, args.epoch, records, args.store_softmax, base_softmax, mask_np, fasta_ids, args.name)
+    write_outputs(output_dir, records, args.store_softmax, base_softmax, mask_np, fasta_ids, args.name)
 
 
 if __name__ == "__main__":
