@@ -63,7 +63,7 @@ def parse_args():
     input_group.add_argument("--sequence", help="Input single protein sequence (string)")
     parser.add_argument("--seq_id", default="query", help="Identifier for --sequence input")
     parser.add_argument("--seq_temp", type=float, default=None, help="Optional temperature metadata for --sequence input")
-    parser.add_argument("--weights", type=int, default=1999, help="Generator weights")
+    parser.add_argument("--weights", type=str, default="", help=" Directory with Generator weights")
     parser.add_argument("--output_dir", default=None, help="Where to write FASTA/JSONL outputs (default: run_dir)")
     parser.add_argument("--name", default=None, help="Optional prefix for output files")
     parser.add_argument("--replicates", type=int, default=1, help="Number of variants per input sequence")
