@@ -833,6 +833,11 @@ def main():
     del generator
     gc.collect()
 
+    del model
+    del tokenizer  # if you want
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # OGT prediction
     if args.skip_ogt:
         print("[info] Skipping OGT prediction as requested.")
