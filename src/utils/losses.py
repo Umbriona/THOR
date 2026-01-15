@@ -3,19 +3,33 @@ from tensorflow.keras.losses import Loss, CategoricalCrossentropy, BinaryCrossen
 from tensorflow.keras.backend import softplus
 from tensorflow.keras import backend as K
 
+def _reduce_weighted_loss(loss, weight=None, eps=1e-7, num_replicas=1):
+    if weight is None:
+        reduced = tf.reduce_mean(loss)
+    else:
+        weight = tf.cast(weight, loss.dtype)
+        if weight.shape.rank is not None and loss.shape.rank is not None:
+            if weight.shape.rank == loss.shape.rank + 1:
+                weight = tf.squeeze(weight, axis=-1)
+        reduced = tf.reduce_sum(loss * weight) / (tf.reduce_sum(weight) + eps)
+    return reduced / tf.cast(num_replicas, loss.dtype)
+
 class WassersteinLoss(Loss):
     def __init__(self, ):
         super(WassersteinLoss, self).__init__()
-        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0)
+        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0,
+                                             reduction=tf.keras.losses.Reduction.NONE)
+        self.num_replicas = 1
         
     def cycle_loss_fn(self, real, cycled, w=None):
         #return tf.reduce_mean(tf.abs(real - cycled))
-        return self.cross( real, cycled, w)
+        loss = self.cross(real, cycled, w)
+        return _reduce_weighted_loss(loss, w, num_replicas=self.num_replicas)
     
     def identity_loss_fn(self, real, same, w = None):
         #loss = tf.reduce_mean(tf.abs(real - same))
-        loss = self.cross( real, same, w)
-        return loss
+        loss = self.cross(real, same, w)
+        return _reduce_weighted_loss(loss, w, num_replicas=self.num_replicas)
     
     # Define the loss function for the generators
     def generator_loss_fn(self, fake):
@@ -30,40 +44,47 @@ class WassersteinLoss(Loss):
 class NonReduceingLoss(Loss):
     def __init__(self, ):
         super(NonReduceingLoss, self).__init__()
-        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0)#, reduction=tf.keras.losses.Reduction.NONE)
-        self.bin = tf.keras.losses.BinaryCrossentropy(from_logits=True, axis=-1)#, reduction=tf.keras.losses.Reduction.NONE)
-        self.bin_d=tf.keras.losses.BinaryCrossentropy(from_logits=True, label_smoothing=0.0,axis=-1)#, reduction=tf.keras.losses.Reduction.NONE)
+        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0,
+                                             reduction=tf.keras.losses.Reduction.NONE)
+        self.bin = tf.keras.losses.BinaryCrossentropy(from_logits=True, axis=-1,
+                                                      reduction=tf.keras.losses.Reduction.NONE)
+        self.bin_d=tf.keras.losses.BinaryCrossentropy(from_logits=True, label_smoothing=0.0,axis=-1,
+                                                      reduction=tf.keras.losses.Reduction.NONE)
         self.eps = tf.keras.backend.epsilon()
+        self.num_replicas = 1
 
     def cycle_loss_fn(self, real, cycled, w=None):
         #return tf.reduce_mean(tf.abs(real - cycled))
         real = tf.cast(real, dtype="float32")
         cycled = tf.cast(cycled, dtype="float32")
         w = tf.cast(w, dtype="float32")
-        return self.cross( real, cycled, w)
+        loss = self.cross(real, cycled, w)
+        return _reduce_weighted_loss(loss, w, eps=self.eps, num_replicas=self.num_replicas)
     
     def identity_loss_fn(self, real, same, w = None):
         #loss = tf.reduce_mean(tf.abs(real - same))
         real = tf.cast(real, dtype="float32")
         same = tf.cast(same, dtype="float32")
         w = tf.cast(w, dtype="float32")
-        loss = self.cross( real, same, w)
-        return loss
+        loss = self.cross(real, same, w)
+        return _reduce_weighted_loss(loss, w, eps=self.eps, num_replicas=self.num_replicas)
     def self_loss_fn(self, real, fake, w = None):
         #loss = tf.reduce_mean(tf.abs(real - same))
         real = tf.cast(real, dtype="float32")
         fake = tf.cast(fake, dtype="float32")
         w = tf.cast(w, dtype="float32")
-        loss = self.cross( real, fake, w)
-        return loss
+        loss = self.cross(real, fake, w)
+        return _reduce_weighted_loss(loss, w, eps=self.eps, num_replicas=self.num_replicas)
 
     def _masked_mean(self, values, mask=None):
         if mask is None:
-            return K.mean(values)
+            reduced = K.mean(values)
+            return reduced / tf.cast(self.num_replicas, values.dtype)
         mask = tf.cast(mask, values.dtype)
         masked_values = values * mask
         denominator = tf.reduce_sum(mask) + self.eps
-        return tf.reduce_sum(masked_values) / denominator
+        reduced = tf.reduce_sum(masked_values) / denominator
+        return reduced / tf.cast(self.num_replicas, values.dtype)
     
     def generator_loss_fn(self, fake, mask=None):
         #return self.bin(tf.ones_like(fake), fake)
@@ -89,10 +110,13 @@ class NonReduceingLoss(Loss):
 class HingeLoss(Loss):
     def __init__(self ):
         super(HingeLoss,self).__init__()
-        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0)
+        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0,
+                                             reduction=tf.keras.losses.Reduction.NONE)
+        self.num_replicas = 1
 
     def cycle_loss_fn(self, real, cycled, w):
-        return self.cross( real, cycled, w)
+        loss = self.cross(real, cycled, w)
+        return _reduce_weighted_loss(loss, w, num_replicas=self.num_replicas)
     
     # Define the loss function for the generators
     def generator_loss_fn(self, fake):
@@ -107,20 +131,23 @@ class HingeLoss(Loss):
 class MSE(Loss):
     def __init__(self ):
         super(MSE, self).__init__()
-        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0)
-        self.mse   = tf.keras.losses.MeanSquaredError()
+        self.cross = CategoricalCrossentropy(from_logits=False, label_smoothing=0.0,
+                                             reduction=tf.keras.losses.Reduction.NONE)
+        self.mse   = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
+        self.num_replicas = 1
         
     def cycle_loss_fn(self, real, cycled, w):
-        return self.cross( real, cycled, w)
+        loss = self.cross(real, cycled, w)
+        return _reduce_weighted_loss(loss, w, num_replicas=self.num_replicas)
     
     # Define the loss function for the generators
     def generator_loss_fn(self, fake):
         fake_loss = self.mse(tf.ones_like(fake), fake)
-        return fake_loss
+        return _reduce_weighted_loss(fake_loss, num_replicas=self.num_replicas)
 
     # Define the loss function for the discriminators
     def discriminator_loss_fn(self, real, fake):
         real_loss = self.mse(tf.ones_like(real), real)
         fake_loss = self.mse(tf.zeros_like(fake), fake)
-        return (real_loss + fake_loss) * 0.5
-
+        total = _reduce_weighted_loss(real_loss + fake_loss, num_replicas=self.num_replicas)
+        return total * 0.5

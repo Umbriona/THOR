@@ -1,7 +1,17 @@
 #! /usr/bin/env python
 import os, sys
 import math
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1" 
+import argparse
+import yaml
+import datetime
+import pandas as pd
+import threading
+from time import time as TIME
+
+import numpy as np
+#import matplotlib.pyplot as plt
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 try:
     os.chdir('/ThermalGAN/src/scripts')
 except:
@@ -13,15 +23,20 @@ print(os.listdir(currentdir))
 print(os.listdir(os.path.dirname(currentdir)))
 sys.path.append(currentdir)
 
-import argparse
-import yaml
-import datetime
-import pandas as pd
-import threading
-from time import time as TIME
+parser = argparse.ArgumentParser(""" """)
 
-import numpy as np
-#import matplotlib.pyplot as plt
+parser.add_argument('-c', '--config', type=str, default='config.yaml',
+                   help='Configuration file that configures all parameters')
+
+parser.add_argument('-v', '--verbose', action="store_true",
+                   help="Verbosity")
+parser.add_argument('-g', '--gpu', type=str, default=None,
+                   help="Comma-separated GPU ids to make visible (overrides CUDA_VISIBLE_DEVICES).")
+
+args = parser.parse_args()
+
+if args.gpu:
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
 import tensorflow as tf
 from tensorflow import keras
@@ -48,17 +63,6 @@ print("  variable_dtype:", mixed_precision.global_policy().variable_dtype)
 
 os.environ["HDF5_USE_FILE_LOCKING"]="FALSE"
 
-parser = argparse.ArgumentParser(""" """)
-
-parser.add_argument('-c', '--config', type=str, default = 'config.yaml',
-                   help = 'Configuration file that configures all parameters')
-
-parser.add_argument('-v', '--verbose', action="store_true",
-                   help = "Verbosity")
-parser.add_argument('-g', '--gpu', type=str, choices=['0', '1','0,1'], default='0,1')
-
-args = parser.parse_args()
-
 def reset_training_metrics(model):
         for key in model.training_metrics.keys():
             model.training_metrics[key].reset_states()
@@ -66,6 +70,12 @@ def reset_training_metrics(model):
 def reset_validation_metrics(model):
         for key in model.validation_metrics.keys():
             model.validation_metrics[key].reset_states()
+
+def build_strategy():
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        return tf.distribute.MirroredStrategy()
+    return tf.distribute.get_strategy()
         
 
 class History():
@@ -293,12 +303,21 @@ class WarmupDecayLRScheduler:
         return min_lrs
 
 
-def train(config, model, data, time, classifyer):
+def train(config, model, data, time, classifyer, strategy=None):
 
     #file writers
     result_dir = os.path.join(config['Results']['base_dir'],time)
     
     base_dir = os.path.join(config['Log']['base_dir'],time)
+    if strategy is None:
+        strategy = tf.distribute.get_strategy()
+    num_replicas = getattr(strategy, "num_replicas_in_sync", 1)
+    global_batch_size = config['CycleGan']['batch_size']
+    if num_replicas > 1 and global_batch_size % num_replicas != 0:
+        raise ValueError(
+            f"CycleGan.batch_size ({global_batch_size}) must be divisible by num_replicas ({num_replicas})."
+        )
+    print(f"Training with {num_replicas} replicas, global batch size {global_batch_size}")
 
     history_obj = History(model, result_dir)
     optimizer_map = {
@@ -372,30 +391,37 @@ def train(config, model, data, time, classifyer):
 
     ############################################## Training loop ###############################################
 
-    # Steps per epoch based on effective batch (per-replica * num_replicas)
-    steps_per_epoch = max(1, int(1e6 / config['CycleGan']['batch_size']))
-    #train_dist_ds = strategy.experimental_distribute_dataset(
-    #    tf.data.Dataset.zip((data['meso_train'], data['thermo_train']))
-    #)
-    log_interval = max(1, int(1024 / config['CycleGan']['batch_size']))
+    train_ds = tf.data.Dataset.zip((data['meso_train'], data['thermo_train']))
+    train_dist_ds = strategy.experimental_distribute_dataset(train_ds)
 
+    @tf.function
+    def distributed_train_step(batch):
+        strategy.run(model.train_step, args=(batch,))
 
+    @tf.function
+    def distributed_train_step_generator(batch):
+        strategy.run(model.train_step_generator, args=(batch,))
 
-    train_iter_meso = iter(data['meso_train'])
-    train_iter_thermo = iter(data['thermo_train'])
+    @tf.function
+    def distributed_validate_step(batch):
+        strategy.run(model.validate_step, args=(batch,))
+
+    # Steps per epoch based on configured global batch size.
+    steps_per_epoch = max(1, int(1e6 / global_batch_size))
+    log_interval = max(1, int(1024 / global_batch_size))
+
+    train_iter = iter(train_dist_ds)
 
     for epoch in range(config['CycleGan']['epochs']):
         start_time = TIME()
         for step in range(steps_per_epoch):
-            batche_meso = next(train_iter_meso)
-            batche_thermo = next(train_iter_thermo)
-            batches = [batche_meso, batche_thermo]
+            batches = next(train_iter)
             if step%config['CycleGan']["Fractional_training"] == 0:
-                model.train_step(batches) # returns losses_, logits = 
+                distributed_train_step(batches) # returns losses_, logits = 
             else:
-                model.train_step_generator(batches)
+                distributed_train_step_generator(batches)
             
-            model.validate_step(batches)
+            distributed_validate_step(batches)
             global_step += 1
             current_lrs = lr_scheduler(global_step)
 
@@ -431,9 +457,11 @@ def train(config, model, data, time, classifyer):
         start_time = TIME()
         val_x = data['meso_val'].batch(config['CycleGan']['batch_size'], drop_remainder=True).prefetch(buffer_size=tf.data.AUTOTUNE)
         val_y = data['thermo_val'].batch(config['CycleGan']['batch_size'], drop_remainder=True).prefetch(buffer_size=tf.data.AUTOTUNE)
+        val_ds = tf.data.Dataset.zip((val_x, val_y))
+        val_dist_ds = strategy.experimental_distribute_dataset(val_ds)
 
-        for batch in zip(val_x, val_y):
-            model.validate_step(batch)
+        for batch in val_dist_ds:
+            distributed_validate_step(batch)
 
         history_obj.update_test_history(model, epoch )
         history_obj.write_test_history()
@@ -475,9 +503,8 @@ def train(config, model, data, time, classifyer):
 def main():
     print(f"Tf version is {tf.__version__}")
     os.environ["HDF5_USE_FILE_LOCKING"]="FALSE"
-    # GPU setting
-
-    #os.environ["CUDA_VISIBLE_DEVICES"]= args.gpu
+    strategy = build_strategy()
+    print(f"Using strategy: {strategy.__class__.__name__} with {strategy.num_replicas_in_sync} replicas")
     
     # Get time
     time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -516,46 +543,48 @@ def main():
     with open(file, 'r') as file_descriptor:
         config_class = yaml.load(file_descriptor, Loader=yaml.FullLoader)
 
-    model_input = tf.keras.layers.Input(shape=(512,21))
-    model1 = models_class.get_classifier(config_class['Classifier'], 21)
-    model2 = models_class.get_classifier(config_class['Classifier'], 21)
-    model3 = models_class.get_classifier(config_class['Classifier'], 21)
+    with strategy.scope():
+        model_input = tf.keras.layers.Input(shape=(512,21))
+        model1 = models_class.get_classifier(config_class['Classifier'], 21)
+        model2 = models_class.get_classifier(config_class['Classifier'], 21)
+        model3 = models_class.get_classifier(config_class['Classifier'], 21)
 
-    print("Initialized regression models")
+        print("Initialized regression models")
 
-    output1 = model1(model_input)
-    output2 = model2(model_input)
-    output3 = model3(model_input)
+        output1 = model1(model_input)
+        output2 = model2(model_input)
+        output3 = model3(model_input)
 
-    #model1.summary()
+        #model1.summary()
 
-    model1.load_weights(models_weights[0]).expect_partial()
-    model2.load_weights(models_weights[1]).expect_partial()
-    model3.load_weights(models_weights[2]).expect_partial()
+        model1.load_weights(models_weights[0]).expect_partial()
+        model2.load_weights(models_weights[1]).expect_partial()
+        model3.load_weights(models_weights[2]).expect_partial()
 
-    print("Loaded weights regression model")
+        print("Loaded weights regression model")
 
-    ensemble_output = tf.keras.layers.Average()([output1, output2, output3])
-    ensemble_model = tf.keras.Model(inputs=model_input, outputs=ensemble_output)
+        ensemble_output = tf.keras.layers.Average()([output1, output2, output3])
+        ensemble_model = tf.keras.Model(inputs=model_input, outputs=ensemble_output)
 
-    
-    #ensemble_model.summary()
-    
-    
-    # Initiate model
-    model = models_gan.CycleGan(config, classifier = ensemble_model)
+        
+        #ensemble_model.summary()
+        
+        
+        # Initiate model
+        model = models_gan.CycleGan(config, classifier = ensemble_model)
 
-    print("Loaded ThermalGAN")
-    
-    loss_obj  = load_losses(config['CycleGan']['Losses'])
-    optimizers = load_optimizers(config['CycleGan']['Optimizers'])
-    model.compile(loss_obj, optimizers)
+        print("Loaded ThermalGAN")
+        
+        loss_obj  = load_losses(config['CycleGan']['Losses'])
+        loss_obj.num_replicas = strategy.num_replicas_in_sync
+        optimizers = load_optimizers(config['CycleGan']['Optimizers'])
+        model.compile(loss_obj, optimizers)
 
-    print("Compiled ThermalGAN")
+        print("Compiled ThermalGAN")
 
     # Initiate Training
 
-    history = train(config, model, data, time + os.path.basename(args.config), classifyer = ensemble_model)
+    history = train(config, model, data, time + os.path.basename(args.config), classifyer = ensemble_model, strategy=strategy)
     
     #writing results
     

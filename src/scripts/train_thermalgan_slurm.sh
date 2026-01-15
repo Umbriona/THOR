@@ -2,7 +2,7 @@
 #SBATCH --job-name=ThermalGAN
 #SBATCH --account=NAISS2025-5-369
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:A100:1
+#SBATCH --gres=gpu:A100:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=3-00:00:00
 #SBATCH --output=%x.%j.out
@@ -49,5 +49,5 @@ singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
 --nv ${IMAGE}  python train_cyclegan-diff_training_2.py \
--c ${CONFIG} -v -g 0
+-c ${CONFIG} -v
 #done
