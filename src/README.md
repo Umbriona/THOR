@@ -66,12 +66,37 @@ and `history.csv` into a timestamped results directory.
 | `-g/--gpu` | comma-separated GPU ids |
 | `-v/--verbose` | |
 
-Config sections: `CycleGan` (architecture, losses, optimizers, PID settings,
-`Fractional_training`, optional `saved` to resume), `Classifier` (the ET
-critic), `Data_meso` / `Data_thermo` (TFRecord locations), `Log`, `Results`.
+Start from **`config/Cycle_gan/Reference_config.yaml`**, the current reference —
+it is the only config in that directory that matches the present schema; the
+rest are archived under `config/Cycle_gan/archive/`.
+
+Config sections: `CycleGan` (architecture, `Losses`, `Optimizers`,
+`LR_Schedule`, PID settings, `Fractional_training`), `Classifier` (the ET
+critic), `Data_meso` / `Data_thermo` (TFRecord locations, `records_type: ESM`),
+`Log`, `Results`.
 
 Wrapper: `train_thor.sh` — 4×A100, 3-day limit, picks a config by
 `$SLURM_ARRAY_TASK_ID`.
+
+#### Fine-tuning on a specific family
+
+To continue from an existing model rather than training from scratch — the
+family-specific fine-tuning step — point `saved` at a previous run's results
+directory in the config:
+
+```yaml
+CycleGan:
+    saved: "/path/to/results/20251218-225521config_67.yaml"
+    # saved_epoch: 39
+```
+
+With `saved_epoch` set, the per-epoch weights in `<saved>/weights/epoch_<n>/`
+are loaded (the four `.h5` files for G, F and both discriminators). Without it,
+the end-of-run checkpoint `<saved>/weights/cycle_gan_model_final` is used.
+Set `saved` to `"none"` or leave it out to train from scratch.
+
+Point `Data_meso` / `Data_thermo` at the family's records, and everything else
+proceeds as a normal training run.
 
 ### `scripts/train_et_regressor.py` — train the temperature regressor
 Trains the environmental-temperature (ET) model used as THOR's critic and to

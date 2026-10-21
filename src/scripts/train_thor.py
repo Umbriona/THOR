@@ -582,6 +582,25 @@ def main():
 
         print("Compiled ThermalGAN")
 
+        # Optional fine-tuning: start from the weights of a previous run instead
+        # of from scratch. Driven by config['CycleGan']['saved'], which points at
+        # a previous results directory. Leave it unset, empty or "none" to train
+        # from scratch, which is the default.
+        saved = config['CycleGan'].get('saved', '')
+        if saved not in (None, '', 'none', 'None'):
+            saved_epoch = config['CycleGan'].get('saved_epoch', None)
+            if saved_epoch in (None, '', 'none', 'None'):
+                # End-of-run checkpoint written by model.save_weights() below.
+                checkpoint = os.path.join(saved, 'weights', 'cycle_gan_model_final')
+                model.load_weights(checkpoint)
+            else:
+                # Per-epoch weights written by model.save_gan() during training.
+                # pid_G/pid_F are unused by load_gan, so None is safe here: the
+                # PID controllers are created later, inside train().
+                checkpoint = os.path.join(saved, 'weights', f"epoch_{saved_epoch}")
+                model.load_gan(checkpoint, None, None)
+            print(f"Fine-tuning: loaded ThermalGAN weights from {checkpoint}")
+
     # Initiate Training
 
     history = train(config, model, data, time + os.path.basename(args.config), classifyer = ensemble_model, strategy=strategy)

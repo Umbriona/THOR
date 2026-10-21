@@ -1,56 +1,69 @@
 CycleGan:
+    val_interval_steps: 100
+    write_interval_steps: 500
     Vocab_size: 21
-    lambda_cycle: 5.0
-    lambda_id: 0.015
+    lambda_cycle: 1
+    lambda_id: 0
+    lambda_evo_G: 0.5
+    lambda_evo_F: 0.5
+    lambda_self: 0.85
+    PID_P: 5
+    PID_I: 0.5
+    PID_D: 0.1
     epochs: 500
-    batch_size: 32
+    batch_size: 512
     dir: "weights/model"
     dynamic: True
+    load_model: False
+    # Fine-tuning. Leave "none" to train from scratch. To continue from a
+    # previous run instead, point `saved` at that run's results directory:
+    #   saved: "/data/results/20251218-225521config_67.yaml"
+    # Optionally add `saved_epoch` to load one epoch's weights
+    # (<saved>/weights/epoch_<n>/); omit it to load the end-of-run checkpoint
+    # (<saved>/weights/cycle_gan_model_final).
+    saved: "none"
+    # saved_epoch: 39
+    Fractional_training: 5
+    'BERT': "all"
+    concat_modalities_discriminator: False
+    concat_modalities_generator: False
+    LR_Schedule:
+        warmup:
+            steps: 10000
+            start_factor: 0.05
+        decay:
+            strategy: cosine
+            start_step: 20000  # wait until warmup + a few steady epochs
+            decay_steps: 200000 # cover the bulk of training; tweak to match total steps
+            alpha: 0.1         # final multiplier (i.e. 10% of base lr)
+            schedule:
+              - step: 10000
+                multiplier: 0.5
+              - step: 20000
+                multiplier: 0.2
+        min_lr:
+            factor: 0.05
     Generator:
-        type: res
-        n_layers: 9
+        input_projection: True
         max_length: 512
         vocab_size: 21
-        filters: [ 256, 256, 256, 256, 256, 256, 256, 256, 256]
-        kernels: [9, 9, 9, 9, 9, 9, 9, 9, 9]
-        dilations: [2, 2, 2, 2, 2, 2, 2, 2, 2]
-        strides: [1, 1, 1, 1, 1, 1, 1, 1, 1]
-        down_sample: 2
-        use_attention: True
-        attention_loc: 8
-        use_gumbel: True
-        use_spectral_norm: False
-        norm: "Instance" # "Layer" "Batch" "Instance"
-        temperature: 1.0
-        l1: 0.0
-        l2: 0.0
-        rate: 0.2
+        filters_down_stack: [256, 512, 768, 768, 1024]
+        norm: "Layer" # "Layer" "Batch" "Instance"
     Discriminator:
-        type: "res" # conv or res
-        n_layers: 9
+        input_projection: True
         max_length: 512
         vocab_size: 21
-        filters: [64, 64, 64, 128, 128, 128, 256, 256, 256]
-        kernels: [9, 9, 9, 9, 9, 9, 9, 9, 9]
-        dilations: [2, 2, 2, 2, 2, 2, 2, 2, 2]
-        strides: [2, 1, 2, 1, 2, 1, 2, 1, 1]
-        patch: True
-        use_attention: True
-        attention_loc: 7
-        use_spectral_norm: True
-        use_gp: False
+        filters: [256, 512, 1024]
         norm: "Instance" # "Layer" "Batch" "Instance"
-        l1: 0.0
-        l2: 0.0
-        rate: 0.2
+
     Losses:
         loss: Non-Reducing # Wasserstein #Mse #Hinge #Non-Reducing
     Optimizers:
         optimizer_discriminator: Adam
-        learning_rate_discriminator: 0.0002
+        learning_rate_discriminator: 1e-5
         beta_1_discriminator: 0.5
         optimizer_generator: Adam
-        learning_rate_generator: 0.0001
+        learning_rate_generator: 2e-5
         beta_1_generator: 0.5         
     Metrics:
 Classifier:
@@ -76,24 +89,26 @@ Classifier:
 Data_meso:
     max_length: 512
     max_samples: 4000000
-    base_dir: '/data/records'
-    train_dir: 'Meso_1.tfrecord'
-    val_dir: 'Meso_1.tfrecord'
-    n_shards: 10 # How many shards to use
+    base_dir: '/data/records/'
+    train_dir: 'train/Uniprot_enzyme_train_COG/*.tfrecord.gz'
+    val_dir: 'test/Uniprot_enzyme_test_COG/*.tfrecord.gz'
+    n_shards: 400 # How many shards to use
     shards: 100
+    records_type: 'ESM'
     
 Data_thermo:
     max_length: 512
     max_samples: 4000000
-    base_dir: '/data/records'
-    train_dir: 'Thermo_8.tfrecord'
-    val_dir: 'Thermo_8.tfrecord'
-    n_shards: 10 # How many shards to use
+    base_dir: '/data/records/'
+    train_dir: 'train/IMG_enzyme_train_COG/*.tfrecord.gz'
+    val_dir: 'test/IMG_enzyme_test_COG/*.tfrecord.gz'
+    n_shards: 400 # How many shards to use
     shards: 100
-    
+    records_type: 'ESM'
+
 Log:
-    base_dir: "../../log"
-    img: img 
-    test: '/data/TestSet/test.fasta'
+    base_dir: "/data/log"
+    test_meso: '/data/TrainingSet/train_meso.fasta'
+    test_target: '/data/TrainingSet/train_thermo_60.fasta'
 Results:
-    base_dir: "../../results"
+    base_dir: "/data/results"

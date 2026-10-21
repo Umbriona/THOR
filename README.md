@@ -1,12 +1,45 @@
-# THOR
+# THOR — THermally Optimised Representations
 
-THOR generates thermostable variants of a protein sequence while preserving its
-family identity. It is a CycleGAN over protein sequences: a generator maps a
+THOR generates thermostable variants of a protein while preserving the identity
+of the starting sequence. It learns transformations between **unpaired**
+mesophilic and thermophilic sequence populations, so it can raise the
+thermostability of enzyme families it never saw thermophilic examples of during
+training.
+
+Architecturally it is a CycleGAN over protein sequences: a generator maps a
 mesophilic sequence to a thermophilic counterpart, constrained by per-position
 amino-acid likelihoods from ESM-1v and by a temperature regressor that scores
 how thermophilic the result looks.
 
 <img src="Covver_image_small.png" alt="THOR" width="420">
+
+<details>
+<summary><b>Abstract</b></summary>
+
+Thermal adaptation has evolved repeatedly across the protein universe, yet
+whether its underlying sequence principles can be separated from evolutionary
+ancestry remains unknown. Here, we show that thermal adaptation follows
+transferable sequence principles that extend beyond the evolutionary histories
+of individual enzyme families. We developed THOR (THermally Optimised
+Representations), a generative framework that learns transformations between
+unpaired mesophilic and thermophilic sequence populations while preserving the
+identity of the starting protein. Across evolutionarily divergent enzyme
+families, THOR transferred thermostability without exposure to thermophilic
+homologues during training. In malate dehydrogenase, excluded from cross-family
+training, zero-shot designs increased apparent melting temperature by up to
+15 °C, with gains reaching 36 °C following limited family-specific
+fine-tuning. Majority of designed variants retained activity following
+prolonged thermal challenge, while selected variants exhibited nearly threefold
+higher catalytic turnover than wild type. Molecular dynamics simulations
+revealed that comparable thermal phenotypes emerge through distinct,
+background-dependent changes in protein flexibility and stabilising
+interactions. Together, these findings demonstrate that thermal adaptation
+encodes transferable information beyond lineage-specific evolutionary
+solutions, revealing evolution as a source of reusable adaptive principles for
+engineering phenotypes in proteins whose evolutionary lineages have never
+acquired them.
+
+</details>
 
 ## The three models
 
@@ -43,12 +76,24 @@ cd src/scripts
 sbatch --array=0 train_thor.sh      # -> train_thor.py -c <config>.yaml
 ```
 
+To **fine-tune on a specific family** rather than train from scratch, set
+`saved` in the config to a previous run's results directory and point
+`Data_meso` / `Data_thermo` at that family's records:
+
+```yaml
+CycleGan:
+    saved: "/path/to/results/20251218-225521config_67.yaml"
+    # saved_epoch: 39     # optional: a specific epoch, else the final checkpoint
+```
+
 Full descriptions of every script and its arguments: **[`src/README.md`](src/README.md)**.
 
 ## Repository layout
 
 ```
-config/           YAML configs: Cycle_gan/ (THOR), Classifier/ (ET regressor)
+config/
+  Cycle_gan/      THOR configs - start from Reference_config.yaml
+  Classifier/     ET regressor configs
 env/              Conda environment files and Singularity recipes
 src/
   scripts/        Entry points - training, generation, prediction
