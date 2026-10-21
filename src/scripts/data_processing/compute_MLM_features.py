@@ -1,4 +1,23 @@
 #!/usr/bin/env python
+"""
+Compute per-position substitution probabilities with ESM-1v and write them as
+model-ready training data.
+
+This is the single feature-generation step for THOR: it runs the (optionally
+fine-tuned) ESM-1v model over a FASTA, quantizes the per-position probability
+distributions, and shards the result straight to disk — no separate
+record-building stage is needed.
+
+Output format is selected with `--format`:
+    tfrecord  (default)  gzip-compressed .tfrecord shards, consumed by
+                         train_thor.py
+    pickle               pickled shards, convenient for inspection and
+                         downstream analysis
+
+Driven by `compute_MLM_features_tfrecord.sh` and
+`compute_MLM_features_pickle.sh`, which differ only in `--format` and in their
+SLURM settings.
+"""
 import argparse, os, math, pickle, sys, re
 from pathlib import Path
 from time import time

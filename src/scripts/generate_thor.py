@@ -37,7 +37,7 @@ if str(scripts_root) not in sys.path:
 from utils import preprocessing as pre
 from utils import models_gan_atte as gan
 from utils import models_classifyer as models_class
-from data_processing.compute_MLM_features_quantized_tfrecord import (  # noqa: E501
+from data_processing.compute_MLM_features import (  # noqa: E501
     AA20,
     clean_seq,
     compute_single_mode_fast,

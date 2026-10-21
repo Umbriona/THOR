@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=Generate_MLM_features
+#SBATCH --job-name=MLM_features_tfrecord
 #SBATCH --account=NAISS2025-5-369
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A40:1
@@ -13,7 +13,7 @@ FILE_FASTA=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/THOR_HUG
 
 IMAGE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/env/singularity/esm-finetune_tf.sif
 
-SCRIPT=compute_MLM_features_quantized_tfrecord.py
+SCRIPT=compute_MLM_features.py
 DIR_FEATURE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/THOR_HUGE/records/train/Uniprot_enzymes #non_redundant_v2
 
 CHECKPOINT=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/weights/esm1v_mlm_ur90_finetune/checkpoint-119432 #esm1v_mlm_ur90_finetune/checkpoint-119432 #esm1v_mlm_ur90_finetune/checkpoint-119432 # prot_bert_bfd #esm1v_mlm_ur90_finetune/checkpoint-119432

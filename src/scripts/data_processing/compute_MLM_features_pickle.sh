@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=Generate_MLM_features
+#SBATCH --job-name=MLM_features_pickle
 #SBATCH --account=NAISS2025-22-904
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A100:1
@@ -12,7 +12,7 @@ FILE_FASTA=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/fasta/IM
 
 IMAGE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/env/singularity/esm-finetune.sif
 
-SCRIPT=compute_MLM_features_quantized.py
+SCRIPT=compute_MLM_features.py
 DIR_FEATURE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/features_mlm/IMG_test #non_redundant_v2
 
 CHECKPOINT=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/weights/esm1v_mlm_ur90_finetune/checkpoint-119432
@@ -28,6 +28,7 @@ singularity exec --nv  ${IMAGE} /opt/conda/bin/python \
  --max_entries 10000 \
  --batch_tokens 40000\
  --name Target_IMG_test_single_ckp119432 \
+ --format pickle \
  --bf16
 
 # --mask_prob 0.15 \
