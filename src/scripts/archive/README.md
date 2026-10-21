@@ -9,6 +9,7 @@ scripts are:
 | Training | `../train_thor.sh` | `../train_thor.py` |
 | Generation, from FASTA | `../generate_thor.sh` | `../generate_thor.py` |
 | Generation, from TFRecords | `../generate_thor_batch.sh` | `../generate_thor_batch.py` |
+| ET regressor | `../train_et_regressor.sh` | `../train_et_regressor.py` |
 
 ## Training lineage
 
@@ -43,3 +44,20 @@ The current wrapper, `../train_thor.sh`, was `train_thermalgan_slurm.sh`.
 Renamed, not retired: `generate_variants_single.py` → `../generate_thor.py`,
 `test_generate_ThermalGAN.py` → `../generate_thor_batch.py` (despite the
 `test_` prefix, it was never a test — it is the dataset-scale generation path).
+
+## ET regressor (temperature predictor)
+
+The published temperature model is a one-hot CNN regressor, trained by
+`../train_et_regressor.py` (formerly `train_classifier.py`). These variants are
+not used:
+
+| File | Why retired |
+|---|---|
+| `train_classifier_onehot.py` | Abandoned mid-edit and **cannot run**: calls `models_class.get_classifier` though the module is imported as `models`, and passes `x_train` / `x_val` to `model.fit` after the lines defining them were deleted. Its `models_weights` / `new_model_weights` lists are never used, so the fine-tuning it was written for never happens. Kept only as a record of the intent — fine-tuning the OGT ensemble on IMG data. |
+| `train_classifier_embeddings.py` + `.sh` | PyTorch regressor over precomputed ESM embeddings (h5). An alternative architecture that was not the implementation used in the paper. |
+| `evaluate_classifier_embeddings.py` + `.sh` | Evaluation counterpart to the above. The wrapper also passes `-c ${CONFIG_FILE}` without ever setting `CONFIG_FILE`. |
+
+Naming note: "ET" (environmental temperature) is the term used in the paper.
+The codebase still says `OGT` in weights paths and `Classifier` in config keys
+and in `utils/models_classifyer.py`; those were deliberately left unchanged, as
+they are referenced by saved configs and by the trained weights on disk.

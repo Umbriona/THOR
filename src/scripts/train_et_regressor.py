@@ -1,4 +1,21 @@
 #! /usr/bin/env python
+"""
+Train the environmental temperature (ET) regressor used as THOR's temperature
+critic during GAN training and for scoring generated variants.
+
+Despite the `Classifier` naming retained in the config schema and in
+`utils.models_classifyer`, this trains a *regression* model: it predicts a
+continuous temperature from a one-hot encoded sequence, optimising MSE and
+reporting R² (`coef_det_k`). The `config['model'] == "class"` branch selects a
+binary-classification variant instead, which is not what the published models
+use.
+
+Three independently trained copies form the ensemble in `weights/OGT_ensemble`
+that `train_thor.py` and `generate_thor_batch.py` load.
+
+Usage:
+    python train_et_regressor.py -c <config.yaml> --gpu 0 -v
+"""
 import os, sys
 currentdir = os.getcwd()
 updir = os.path.dirname(currentdir)

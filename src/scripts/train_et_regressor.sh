@@ -1,5 +1,5 @@
 #! /bin/bash
-#SBATCH --job-name=Classifyer_OGT
+#SBATCH --job-name=ET_regressor
 #SBATCH --account=NAISS2024-5-302
 #SBATCH --gres=gpu:A40:1
 #SBATCH --time=1-20:30:00
@@ -14,7 +14,7 @@ WEIGHTS_DIR=${BASE_DIR}/weights
 CONFIG_FILE=${BASE_DIR}/config/Classifier/config_OGT_IMG.yaml
 
 ## Training script 
-TRAINING_SCRIPT=/ThermalGAN/src/scripts/train_classifier.py
+TRAINING_SCRIPT=/ThermalGAN/src/scripts/train_et_regressor.py
 
 ## Image
 IMAGE=${BASE_DIR}/env/singularity/thermalgan.sif
