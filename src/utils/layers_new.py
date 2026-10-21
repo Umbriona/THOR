@@ -1,3 +1,16 @@
+"""
+Custom Keras layers used by THOR's generator and discriminator.
+
+The `SpectralNormalization` class below is derived from TensorFlow Addons
+v0.14.0 (tensorflow_addons/layers/spectral_normalization.py), which is
+Copyright 2019 The TensorFlow Authors and licensed under the Apache License,
+Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+
+It was vendored here so the layer can be used without importing
+tensorflow-addons, and adapted for the 1-D convolutions THOR uses. The rest of
+this module is part of THOR and is licensed under CC BY-NC 4.0; see LICENSE and
+THIRD_PARTY_NOTICES.md.
+"""
 import tensorflow as tf
 #import tensorflow_addons as tfa
 from tensorflow.keras.constraints import Constraint

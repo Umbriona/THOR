@@ -2,6 +2,7 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1noVdf3ifoMZVk_RWrobONUiMg3d2DpYm)
 [![Weights on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20weights-Umbriona%2FTHOR-yellow)](https://huggingface.co/Umbriona/THOR)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey)](LICENSE)
 
 **Try it in your browser:** paste a protein sequence into the
 [Colab notebook](https://colab.research.google.com/drive/1noVdf3ifoMZVk_RWrobONUiMg3d2DpYm)
@@ -122,24 +123,32 @@ and what replaced it.
 
 ## Dependencies
 
-Everything runs inside Singularity/Apptainer containers. The recipes are in
-`env/singularity/`:
-
-| Image | Recipe | Used by |
-|---|---|---|
-| `thermalgan-image1.sif` | `thermalgan-image1.recipie` | THOR training and generation (TensorFlow 2.13, CUDA) |
-| `esm-finetune.sif` | `esm-finetune.recipe` | ESM-1v fine-tuning and feature computation (PyTorch 2.3.1, CUDA 12.1, HF Transformers) |
-
-Build with:
+Everything runs inside a single Singularity/Apptainer container, defined by
+[`env/singularity/thor.recipe`](env/singularity/thor.recipe):
 
 ```sh
-singularity build thermalgan-image1.sif env/singularity/thermalgan-image1.recipie
+singularity build thor.sif env/singularity/thor.recipe
 ```
 
-Core requirements, if you prefer to assemble an environment by hand:
-TensorFlow 2.13 (+ `tensorflow-addons`), PyTorch 2.3, `transformers`,
-`biopython`, `pyyaml`, `pandas`, `numpy`, `simple_pid`. Conda specifications
-for individual steps are in `env/`.
+It bootstraps from the public NGC TensorFlow 23.09 image (TensorFlow 2.13,
+CUDA 11.8, cuDNN 8.9) and adds PyTorch 2.1.2 with HuggingFace Transformers for
+ESM-1v, plus `tensorflow-addons`, `simple_pid`, `biopython` and the rest. The
+build ends with an import check, so a missing dependency fails the build rather
+than a queued job.
+
+One image covers training, generation, ET training and prediction, ESM-1v
+fine-tuning and feature computation:
+
+```sh
+singularity exec --nv thor.sif python train_thor.py -c <config>.yaml
+```
+
+Not included: `mmseqs2`, used by `data_processing/cluster.sh`, which runs on
+the host; `ray` and `seaborn`, needed only by two peripheral scripts
+(`dataset_construction/remove_virus.py` and `analysis/temperature_analysis.py`).
+
+Earlier per-step recipes are kept in `env/singularity/` for reference, and the
+conda specifications in `env/` describe individual steps.
 
 Hardware: THOR training was run on 4×A100 (80 GB). Generation from a FASTA fits
 comfortably on a single A40 or T4.
@@ -155,6 +164,20 @@ comfortably on a single A40 or T4.
 The Python scripts themselves take ordinary command-line arguments and can be
 run directly, which is usually the simpler route — see
 [`src/README.md`](src/README.md) for each one's interface.
+
+## License
+
+THOR is licensed under
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) — free to use,
+share and adapt **for non-commercial purposes**, with attribution. See
+[`LICENSE`](LICENSE). For commercial use, please get in touch.
+
+Note that this is not an OSI-approved open-source license: it restricts
+commercial use.
+
+Parts of this repository derive from third-party works under their own terms,
+and the pretrained models and base images pulled at runtime carry their own
+licenses — see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Citation
 
