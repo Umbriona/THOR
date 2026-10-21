@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -t 0-02:00:00
-#SBATCH --job-name=Gen_ThermalGAN
+#SBATCH --job-name=Gen_THOR
 #SBATCH --gpus-per-node=A40:1
 #SBATCH --account=NAISS2025-5-369
 #SBATCH -p alvis
@@ -42,12 +42,12 @@ DATA_DIR=${SRC_DIR}/data
 RESULTS_DIR=${SRC_DIR}/results
 LOG_DIR=${SRC_DIR}/log
 
-echo "Running generate_variants_single.py"
+echo "Running generate_thor.py"
 singularity exec \
   -H "$(pwd)" \
   --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
   --nv ${IMAGE} \
-  python /ThermalGAN/src/scripts/generate_variants_single.py \
+  python /ThermalGAN/src/scripts/generate_thor.py \
     --run_dir ${RUN_DIR} \
     --fasta ${FASTA} \
     --epoch ${EPOCH} \

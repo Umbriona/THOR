@@ -39,7 +39,7 @@ do
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
---nv ${IMAGE}  python test_generate_ThermalGAN.py \
+--nv ${IMAGE}  python generate_thor_batch.py \
 --input ${INPUT} \
 '--store_softmax' \
 -v -g 0 \
