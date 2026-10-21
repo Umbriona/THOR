@@ -57,6 +57,27 @@ not used:
 | `train_classifier_embeddings.py` + `.sh` | PyTorch regressor over precomputed ESM embeddings (h5). An alternative architecture that was not the implementation used in the paper. |
 | `evaluate_classifier_embeddings.py` + `.sh` | Evaluation counterpart to the above. The wrapper also passes `-c ${CONFIG_FILE}` without ever setting `CONFIG_FILE`. |
 
+## Evaluation
+
+| File | Why retired |
+|---|---|
+| `evaluate_cyclegan.py` | **Cannot run**: imports `utils.models_new`, which does not exist in `src/utils/`. Predates the current model modules. |
+
+## `scratch/`
+
+Notebooks and stubs kept only so nothing is lost; none are referenced by any
+script. The three notebooks were all named `Untitled.ipynb` and were renamed by
+origin on the way in.
+
+| File | Was | What it is |
+|---|---|---|
+| `Untitled_scripts.ipynb` | `src/scripts/` | Loads the generator and prints `summary()`. |
+| `Untitled_utils.ipynb` | `src/utils/` | Builds a one-layer `Sequential` around `GumbelSoftmax` to check it. |
+| `Untitled_data_processing.ipynb` | `src/scripts/data_processing/` | Two cells testing multi-line string printing. |
+| `test_scrip.sh` | `src/scripts/` | SLURM hello-world (`echo` + `sleep 60`), used to verify queue access. |
+| `sample_fasta.py` | `src/scripts/data_processing/` | Empty file (0 bytes), referenced nowhere. |
+| `models_cyclegan_self_loss.py.save` | `src/utils/` | Editor backup of an **older** state of `models_cyclegan_self_loss.py` — lacks `PIDWrapper`, `MAX_LEN`, `USE_XLA` and two imports present in the live module. Superseded by the file it backs up. |
+
 Naming note: "ET" (environmental temperature) is the term used in the paper.
 The codebase still says `OGT` in weights paths and `Classifier` in config keys
 and in `utils/models_classifyer.py`; those were deliberately left unchanged, as
