@@ -84,22 +84,10 @@ explanation.
 
 ## Data processing
 
-| File | Why retired |
-|---|---|
-| `compute_MLM_features_quantized_copy.sh` | A duplicate of `../data_processing/compute_MLM_features_quantized.sh`, made only to run a second SLURM array over a different dataset at the same time. Not a separate pipeline step. |
-
-The surviving wrapper covers Uniprot enzymes. The settings this copy used for
-the IMG thermophiles run, should they need reproducing:
-
-```sh
-#SBATCH --array=50-99
-FILE_FASTA=${BASE}/data/THOR_HUGE/fasta/IMG_Thermophiles/split_files/IMG_Thermophiles_NoCOG_${SLURM_ARRAY_TASK_ID}.fasta
-DIR_FEATURE=${BASE}/data/THOR_HUGE/records/IMG_Thermophiles
---name IMG_Thermophiles_NOCOG_${SLURM_ARRAY_TASK_ID}
-```
-
-Everything else was identical, including the call to
-`compute_MLM_features_quantized_tfrecord.py`.
+Archived pipeline scripts live in their own directory next to the pipeline they
+came from: **`../data_processing/archive/`** — obsolete TFRecord writers, the
+unfinished `Snakefile`, earlier kcat/BRENDA analysis, and a duplicate SLURM
+wrapper. See the README there.
 
 ## `scratch/`
 
