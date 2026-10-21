@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ThermalGAN
+#SBATCH --job-name=THOR
 #SBATCH --account=NAISS2025-5-369
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A100:4
@@ -48,6 +48,6 @@ CONFIG=${DATA_DIR}/config/config_${SLURM_ARRAY_TASK_ID}.yaml
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
---nv ${IMAGE}  python train_cyclegan-diff_training_2.py \
+--nv ${IMAGE}  python train_thor.py \
 -c ${CONFIG} -v
 #done
