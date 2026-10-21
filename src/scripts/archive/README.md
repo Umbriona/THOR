@@ -9,7 +9,8 @@ scripts are:
 | Training | `../train_thor.sh` | `../train_thor.py` |
 | Generation, from FASTA | `../generate_thor.sh` | `../generate_thor.py` |
 | Generation, from TFRecords | `../generate_thor_batch.sh` | `../generate_thor_batch.py` |
-| ET regressor | `../train_et_regressor.sh` | `../train_et_regressor.py` |
+| ET regressor, training | `../train_et_regressor.sh` | `../train_et_regressor.py` |
+| ET regressor, inference | `../predict_et.sh` | `../predict_et.py` |
 
 ## Training lineage
 
@@ -62,6 +63,43 @@ not used:
 | File | Why retired |
 |---|---|
 | `evaluate_cyclegan.py` | **Cannot run**: imports `utils.models_new`, which does not exist in `src/utils/`. Predates the current model modules. |
+| `get_temperature_prediction.py` + `predict_temperatures.sh` | One-off evaluation of the ET ensemble on held-out IMG records, writing true-vs-predicted CSVs. Takes no arguments; every path is hardcoded in the body. **Also buggy — see below.** The reviewer-facing inference path is `../predict_et.py`. |
+
+### Known bugs in `get_temperature_prediction.py`
+
+Recorded because the CSVs it produced may be wrong. Both are in `main()`:
+
+1. **The output files are mislabelled.** The loop at line 96 iterates
+   `batches_y` (the *thermo* split) but writes
+   `Temperature_OGT_IMG_Mesophiles.csv`; the loop at line 111 iterates
+   `batches_x` (*meso*) and writes `..._Thermophiles.csv`. The two progress
+   messages are swapped to match the wrong names.
+2. **The accumulators are never reset.** `ids`, `true_temps` and `pred_temps`
+   are initialised once (lines 91–93); the second loop appends to the same
+   lists. So `..._Thermophiles.csv` holds the thermo rows *and* the meso rows,
+   duplicating everything already in the first file.
+
+A `+ 50.5` offset is applied to the true temperatures in both loops without
+explanation.
+
+## Data processing
+
+| File | Why retired |
+|---|---|
+| `compute_MLM_features_quantized_copy.sh` | A duplicate of `../data_processing/compute_MLM_features_quantized.sh`, made only to run a second SLURM array over a different dataset at the same time. Not a separate pipeline step. |
+
+The surviving wrapper covers Uniprot enzymes. The settings this copy used for
+the IMG thermophiles run, should they need reproducing:
+
+```sh
+#SBATCH --array=50-99
+FILE_FASTA=${BASE}/data/THOR_HUGE/fasta/IMG_Thermophiles/split_files/IMG_Thermophiles_NoCOG_${SLURM_ARRAY_TASK_ID}.fasta
+DIR_FEATURE=${BASE}/data/THOR_HUGE/records/IMG_Thermophiles
+--name IMG_Thermophiles_NOCOG_${SLURM_ARRAY_TASK_ID}
+```
+
+Everything else was identical, including the call to
+`compute_MLM_features_quantized_tfrecord.py`.
 
 ## `scratch/`
 

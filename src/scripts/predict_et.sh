@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=Predict_Temperature
+#SBATCH --job-name=Predict_ET
 #SBATCH --account=NAISS2025-5-369
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A40:1
@@ -21,5 +21,5 @@ IMAGE=${SRC_DIR}/env/singularity/test_6.sif # thermalgan.sif
 time singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${SRC_DIR}:/ThermalGAN, \
---nv ${IMAGE}  python predict_OGT_from_fasta.py /data/best_variants_70.fasta /data/best_variants_70_TM.fasta
+--nv ${IMAGE}  python predict_et.py /data/best_variants_70.fasta /data/best_variants_70_TM.fasta
 #done

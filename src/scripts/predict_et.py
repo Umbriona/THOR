@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""
+Predict environmental temperature (ET) for every sequence in a FASTA and write
+a new FASTA with the predicted value appended to each header.
+
+Uses the three-model ensemble trained by `train_et_regressor.py`. All paths are
+argparse defaults pointing at the container layout (`/ThermalGAN/...`) and can
+be overridden; see `--config` and `--weights`.
+
+Usage:
+    python predict_et.py <in.fasta> <out.fasta>
+"""
 import os, sys
 try:
     os.chdir('/ThermalGAN/src/scripts')
