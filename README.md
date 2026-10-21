@@ -1,5 +1,12 @@
 # THOR — THermally Optimised Representations
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1noVdf3ifoMZVk_RWrobONUiMg3d2DpYm)
+[![Weights on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20weights-Umbriona%2FTHOR-yellow)](https://huggingface.co/Umbriona/THOR)
+
+**Try it in your browser:** paste a protein sequence into the
+[Colab notebook](https://colab.research.google.com/drive/1noVdf3ifoMZVk_RWrobONUiMg3d2DpYm)
+and get thermostable variants back. No install, no weights to download by hand.
+
 THOR generates thermostable variants of a protein while preserving the identity
 of the starting sequence. It learns transformations between **unpaired**
 mesophilic and thermophilic sequence populations, so it can raise the
@@ -51,8 +58,14 @@ acquired them.
 
 ## Quick start
 
-Generating variants from a FASTA needs only a trained run directory — no
-TFRecord preprocessing:
+The [Colab notebook](https://colab.research.google.com/drive/1noVdf3ifoMZVk_RWrobONUiMg3d2DpYm)
+is the fastest route: it clones this repository, pulls the pretrained weights
+from [Hugging Face](https://huggingface.co/Umbriona/THOR) and runs a single
+sequence end to end. It is version-controlled here as
+[`src/scripts/generate_thor_colab.ipynb`](src/scripts/generate_thor_colab.ipynb).
+
+To run locally, generating variants from a FASTA needs only a trained run
+directory — no TFRecord preprocessing:
 
 ```sh
 cd src/scripts
