@@ -24,7 +24,7 @@ FASTA=${SRC_DIR}/data/fasta/PETase/PETases.fasta #PETase/PETases.fasta
 OUTPUT_DIR=${RUN_DIR}
 
 # Generation knobs
-EPOCH=39                        # which epoch under RUN_DIR/weights/ to load
+EPOCH=39                        # loads RUN_DIR/weights/epoch_${EPOCH}/generator_G.h5
 REPLICATES=10                    # variants per input sequence
 TEMPERATURE=1                 # sampling temperature
 STORE_SOFTMAX=--store_softmax   # set to empty string "" to skip JSONL
@@ -50,7 +50,7 @@ singularity exec \
   python /ThermalGAN/src/scripts/generate_thor.py \
     --run_dir ${RUN_DIR} \
     --fasta ${FASTA} \
-    --epoch ${EPOCH} \
+    --weights weights/epoch_${EPOCH} \
     --replicates ${REPLICATES} \
     --temperature ${TEMPERATURE} \
     --gpu ${GPU_ID} \
