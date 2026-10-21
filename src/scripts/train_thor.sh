@@ -1,14 +1,31 @@
 #!/bin/bash
 #SBATCH --job-name=THOR
-#SBATCH --account=NAISS2025-5-369
+#SBATCH --account=CHANGE_ME     # site-specific; or delete this line
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A100:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=3-00:00:00
 #SBATCH --output=%x.%j.out
 
+# ---------------------------------------------------------------------------
+# Paths. Nothing here needs editing for a normal clone: THOR_ROOT is resolved
+# from the directory you submitted from (sbatch) or the script's own location.
+# Override any of these by exporting them, e.g.
+#     THOR_DATA=/scratch/$USER/data sbatch train_thor.sh
+# ---------------------------------------------------------------------------
+if [ -z "${THOR_ROOT:-}" ]; then
+    _here=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}
+    THOR_ROOT=$(cd "$_here" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || THOR_ROOT=""
+    [ -n "$THOR_ROOT" ] || THOR_ROOT=$(cd "$_here/../.." && pwd)
+fi
+THOR_IMAGE=${THOR_IMAGE:-$THOR_ROOT/thor.sif}
+THOR_DATA=${THOR_DATA:-$THOR_ROOT/data}
+THOR_RESULTS=${THOR_RESULTS:-$THOR_DATA/results}
+THOR_LOG=${THOR_LOG:-$THOR_ROOT/log}
+mkdir -p "$THOR_LOG"
+
 # Directory definitions
-SRC_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN
+SRC_DIR=${THOR_ROOT}
 
 DATA_DIR=${SRC_DIR}/data/THOR_HUGE #Different_target_identity #Different_target_identity #Experiment_11137_thermo
 #TMP_DATA_DIR=$TMPDIR/data/Different_target_identity
@@ -32,7 +49,7 @@ LOG_DIR=${SRC_DIR}/log
 
 #export APPTAINERENV_PATH=$PATH
 #export APPTAINERENV_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
-IMAGE=${SRC_DIR}/env/singularity/thermalgan-image1.sif # test_6.sif # thermalgan.sif
+IMAGE=${THOR_IMAGE}
 
 
 #CONFIG=${DATA_DIR}/config_nonortologues_experiment/config_${SLURM_ARRAY_TASK_ID}.yaml
@@ -47,7 +64,7 @@ CONFIG=${DATA_DIR}/config/config_${SLURM_ARRAY_TASK_ID}.yaml
 # run training
 singularity exec \
 -H $(pwd) \
---bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
+--bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN \
 --nv ${IMAGE}  python train_thor.py \
 -c ${CONFIG} -v
 #done

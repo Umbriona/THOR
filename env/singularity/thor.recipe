@@ -1,0 +1,115 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/tensorflow:23.09-tf2-py3
+
+# Single container for the whole THOR pipeline: training, generation,
+# ET-regressor training and prediction, ESM-1v fine-tuning, and feature
+# computation. Build with:
+#
+#     singularity build thor.sif thor.recipe
+#
+# The base is the public NGC TensorFlow 23.09 image (TensorFlow 2.13, CUDA
+# 11.8, cuDNN 8.9). The previous recipe bootstrapped from a cluster-local copy
+# of the same image (/apps/containers/TensorFlow/TensorFlow-2.13.0-NGC-23.09.sif),
+# which only resolves on Alvis; nvcr.io is reachable anywhere.
+
+%labels
+    Name        THOR
+    Description THermally Optimised Representations - full pipeline
+    Base        nvcr.io/nvidia/tensorflow:23.09-tf2-py3
+
+%environment
+    export LD_LIBRARY_PATH=/usr/local/cuda/extras/CUPTI/lib64:${LD_LIBRARY_PATH}
+    export TF_CPP_MIN_LOG_LEVEL=1
+    export PYTHONUNBUFFERED=1
+    export TOKENIZERS_PARALLELISM=false
+    # Safer allocator for large ESM models
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+%post
+    set -e
+
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        build-essential \
+        cmake \
+        git \
+        wget \
+        ncbi-blast+ \
+        && rm -rf /var/lib/apt/lists/*
+
+    python3 -m pip install --upgrade pip
+
+    # --- TensorFlow side -------------------------------------------------
+    # tensorflow itself comes from the NGC base; do not reinstall it.
+    # tensorflow-addons supplies InstanceNormalization and SpectralNormalization,
+    # used by utils/models_generator.py and utils/models_discriminator.py and
+    # imported unconditionally by utils/models_cyclegan_self_loss.py. 0.21.0 is
+    # the release built against TF 2.13 (the old 0.13.0 pin targeted TF 2.5).
+    # The project is archived upstream, so this version is final.
+    pip install tensorflow-addons==0.21.0
+    pip install tensorflow-probability==0.11.0
+    pip install tensorboard-plugin-profile==2.13.0
+    pip install protobuf==3.20
+
+    # --- PyTorch + HuggingFace (ESM-1v) ----------------------------------
+    # CUDA 11.8 wheels, to match the NGC TF 23.09 base.
+    pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+        --extra-index-url https://download.pytorch.org/whl/cu118
+    pip install transformers==4.41.2 tokenizers==0.19.1 huggingface-hub==0.23.2
+    # Needed by finetune_ESM.py (HF Trainer + DDP)
+    pip install "datasets>=2.20.0" "accelerate==0.33.0"
+
+    # --- Project dependencies --------------------------------------------
+    pip install biopython
+    pip install pandas
+    pip install PyYAML
+    pip install matplotlib
+    pip install scikit-learn
+    pip install simple_pid
+    pip install tqdm
+    pip install tifffile==2021.8.8
+    pip install typeguard==2.12.1
+
+    # Ensure cuDNN >= 8.9 to match the TF build (TF 2.13 expects 8.9.5)
+    pip install nvidia-cudnn-cu11==8.9.5.30
+    CUDNN_PATH=$(python3 - <<'PY'
+import nvidia.cudnn, os
+print(os.path.join(os.path.dirname(nvidia.cudnn.__file__), "lib"))
+PY
+)
+    echo "export LD_LIBRARY_PATH=${CUDNN_PATH}:\$LD_LIBRARY_PATH" >> /environment
+    echo "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH" >> /environment
+
+    # --- Fail the build now rather than at job submission ----------------
+    python3 - <<'PY'
+import tensorflow as tf
+import tensorflow_addons as tfa
+import torch, transformers, datasets, accelerate
+import yaml, pandas, numpy, sklearn, Bio, simple_pid, typeguard, tqdm
+import h5py
+print("TensorFlow        :", tf.__version__)
+print("TF-Addons         :", tfa.__version__)
+print("TensorFlow GPUs   :", tf.config.list_physical_devices("GPU"))
+print("Torch             :", torch.__version__, "| CUDA build:", torch.version.cuda)
+print("Transformers      :", transformers.__version__)
+print("Datasets          :", datasets.__version__)
+print("Accelerate        :", accelerate.__version__)
+# The two layers THOR actually needs from addons
+tfa.layers.InstanceNormalization()
+tfa.layers.SpectralNormalization(tf.keras.layers.Conv1D(4, 3))
+print("tfa layers        : OK")
+PY
+
+%runscript
+    exec /bin/bash -lc "$@"
+
+%help
+    THOR - THermally Optimised Representations.
+
+    One container for the whole pipeline. Typical use:
+
+      singularity exec --nv thor.sif python train_thor.py -c <config>.yaml
+      singularity exec --nv thor.sif python generate_thor.py --run_dir ... --fasta ...
+      singularity exec --nv thor.sif python predict_et.py in.fasta out.fasta
+
+    Not included: mmseqs2, used by data_processing/cluster.sh, which is run
+    directly on the host rather than through this container.

@@ -127,8 +127,19 @@ Everything runs inside a single Singularity/Apptainer container, defined by
 [`env/singularity/thor.recipe`](env/singularity/thor.recipe):
 
 ```sh
-singularity build thor.sif env/singularity/thor.recipe
+# ~30 GB of scratch is needed during the build; /tmp is often too small
+export SINGULARITY_TMPDIR=$HOME/singularity_tmp && mkdir -p "$SINGULARITY_TMPDIR"
+singularity build --fakeroot thor.sif env/singularity/thor.recipe
+
+# check the image can actually run this repository
+bash env/singularity/verify_image.sh thor.sif
 ```
+
+`verify_image.sh` goes past "do the packages import": it loads THOR's own
+modules inside the container and builds the generator and discriminator from
+`config/Cycle_gan/Reference_config.yaml`, which is where TensorFlow /
+tensorflow-addons version mismatches actually surface. It needs no weights, no
+data and no GPU.
 
 It bootstraps from the public NGC TensorFlow 23.09 image (TensorFlow 2.13,
 CUDA 11.8, cuDNN 8.9) and adds PyTorch 2.1.2 with HuggingFace Transformers for
@@ -155,14 +166,33 @@ comfortably on a single A40 or T4.
 
 ## Running elsewhere
 
-> **The SLURM wrappers (`*.sh`) carry absolute paths from the cluster THOR was
-> developed on**, under `/mimer/NOBACKUP/groups/snic2022-6-127/...`, together
-> with SLURM account names that will not exist for you. Before running any
-> wrapper, edit the `SRC_DIR`, `DATA_DIR` and `IMAGE` variables near the top and
-> replace `#SBATCH --account=...`.
+The SLURM wrappers (`*.sh`) work from a plain `git clone` without editing. Each
+resolves the repository root from the directory you submit from, and falls back
+to its own location when run directly. Defaults:
 
-The Python scripts themselves take ordinary command-line arguments and can be
-run directly, which is usually the simpler route — see
+| Variable | Default |
+|---|---|
+| `THOR_ROOT` | the repository root |
+| `THOR_IMAGE` | `$THOR_ROOT/thor.sif` |
+| `THOR_DATA` | `$THOR_ROOT/data` |
+| `THOR_RESULTS` | `$THOR_DATA/results` |
+| `THOR_LOG` | `$THOR_ROOT/log` |
+
+Override any of them from the environment, without touching the scripts:
+
+```sh
+cd src/scripts
+THOR_DATA=/scratch/$USER/thor_data sbatch train_thor.sh
+```
+
+Two things remain site-specific, and the scripts say so where they appear:
+`#SBATCH --account=CHANGE_ME` must be set to your allocation (or deleted if
+your site doesn't use accounts), and the partition line is commented out for
+you to fill in. GPU type and walltime in the `#SBATCH` headers reflect the
+machine THOR was developed on and will likely need adjusting.
+
+No SLURM? The Python scripts take ordinary command-line arguments and run
+directly under `singularity exec` — often the simpler route. See
 [`src/README.md`](src/README.md) for each one's interface.
 
 ## License

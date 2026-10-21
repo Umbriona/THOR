@@ -2,9 +2,26 @@
 #SBATCH -t 0-02:00:00
 #SBATCH --job-name=Gen_THOR
 #SBATCH --gpus-per-node=A40:1
-#SBATCH --account=NAISS2025-5-369
-#SBATCH -p alvis
+#SBATCH --account=CHANGE_ME     # site-specific; or delete this line
+##SBATCH -p <partition>        # site-specific; uncomment and set
 #SBATCH -o %x_%j.out
+
+# ---------------------------------------------------------------------------
+# Paths. Nothing here needs editing for a normal clone: THOR_ROOT is resolved
+# from the directory you submitted from (sbatch) or the script's own location.
+# Override any of these by exporting them, e.g.
+#     THOR_DATA=/scratch/$USER/data sbatch generate_thor.sh
+# ---------------------------------------------------------------------------
+if [ -z "${THOR_ROOT:-}" ]; then
+    _here=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}
+    THOR_ROOT=$(cd "$_here" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || THOR_ROOT=""
+    [ -n "$THOR_ROOT" ] || THOR_ROOT=$(cd "$_here/../.." && pwd)
+fi
+THOR_IMAGE=${THOR_IMAGE:-$THOR_ROOT/thor.sif}
+THOR_DATA=${THOR_DATA:-$THOR_ROOT/data}
+THOR_RESULTS=${THOR_RESULTS:-$THOR_DATA/results}
+THOR_LOG=${THOR_LOG:-$THOR_ROOT/log}
+mkdir -p "$THOR_LOG"
 
 set -euo pipefail
 
@@ -13,8 +30,8 @@ module purge
 ########################
 # Paths to edit
 ########################
-SRC_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN
-IMAGE=${SRC_DIR}/env/singularity/thermalgan-image1.2.sif #thermalgan-image1.sif
+SRC_DIR=${THOR_ROOT}
+IMAGE=${THOR_IMAGE}
 
 # Trained run directory containing config.yaml and weights/epoch_<n>/
 RUN_DIR=${SRC_DIR}/data/THOR_HUGE/results/20251218-225521config_67.yaml #20251218-225521config_67.yaml #20251218-225520config_64.yaml
@@ -45,7 +62,7 @@ LOG_DIR=${SRC_DIR}/log
 echo "Running generate_thor.py"
 singularity exec \
   -H "$(pwd)" \
-  --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN,/apps/Common/software/CUDA/12.9.1/extras/CUPTI:/usr/local/cuda/extras/CUPTI \
+  --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN \
   --nv ${IMAGE} \
   python /ThermalGAN/src/scripts/generate_thor.py \
     --run_dir ${RUN_DIR} \

@@ -1,17 +1,34 @@
 #!/bin/bash
 #SBATCH --job-name=ThermalGAN
-#SBATCH --account=NAISS2025-22-904
+#SBATCH --account=CHANGE_ME     # site-specific; or delete this line
 #SBATCH --gres=gpu:A40:1
 #SBATCH --time=0-06:30:00
 
-# Directory definitions
-SRC_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN
+# ---------------------------------------------------------------------------
+# Paths. Nothing here needs editing for a normal clone: THOR_ROOT is resolved
+# from the directory you submitted from (sbatch) or the script's own location.
+# Override any of these by exporting them, e.g.
+#     THOR_DATA=/scratch/$USER/data sbatch make_embeddings.sh
+# ---------------------------------------------------------------------------
+if [ -z "${THOR_ROOT:-}" ]; then
+    _here=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}
+    THOR_ROOT=$(cd "$_here" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || THOR_ROOT=""
+    [ -n "$THOR_ROOT" ] || THOR_ROOT=$(cd "$_here/../../.." && pwd)
+fi
+THOR_IMAGE=${THOR_IMAGE:-$THOR_ROOT/thor.sif}
+THOR_DATA=${THOR_DATA:-$THOR_ROOT/data}
+THOR_RESULTS=${THOR_RESULTS:-$THOR_DATA/results}
+THOR_LOG=${THOR_LOG:-$THOR_ROOT/log}
+mkdir -p "$THOR_LOG"
 
-DATA_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/Design_ProteinMPNN #Experiment_11137_thermo
+# Directory definitions
+SRC_DIR=${THOR_ROOT}
+
+DATA_DIR=${THOR_DATA}          # input FASTA is read from here, as /data
 
 RESULT=${DATA_DIR}/best_variants_70_TM.pkl
 
-IMAGE=${SRC_DIR}/env/singularity/pytorch_transformer.sif # thermalgan.sif
+IMAGE=${THOR_IMAGE}
 
 #INPUT=/data/fasta/train_IMG20_2025_05_31/train_IMG20_2025_05_31_${SLURM_ARRAY_TASK_ID}.fasta
 INPUT=${DATA_DIR}/best_variants_70_TM.fasta

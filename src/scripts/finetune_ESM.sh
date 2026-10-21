@@ -1,12 +1,29 @@
 #!/bin/bash
 #SBATCH -J esm1v-mlm
-#SBATCH --account=NAISS2025-5-369
+#SBATCH --account=CHANGE_ME     # site-specific; or delete this line
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A100:4
 #SBATCH --ntasks-per-node=4
 #SBATCH --time=3-00:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.err
+
+# ---------------------------------------------------------------------------
+# Paths. Nothing here needs editing for a normal clone: THOR_ROOT is resolved
+# from the directory you submitted from (sbatch) or the script's own location.
+# Override any of these by exporting them, e.g.
+#     THOR_DATA=/scratch/$USER/data sbatch finetune_ESM.sh
+# ---------------------------------------------------------------------------
+if [ -z "${THOR_ROOT:-}" ]; then
+    _here=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}
+    THOR_ROOT=$(cd "$_here" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || THOR_ROOT=""
+    [ -n "$THOR_ROOT" ] || THOR_ROOT=$(cd "$_here/../.." && pwd)
+fi
+THOR_IMAGE=${THOR_IMAGE:-$THOR_ROOT/thor.sif}
+THOR_DATA=${THOR_DATA:-$THOR_ROOT/data}
+THOR_RESULTS=${THOR_RESULTS:-$THOR_DATA/results}
+THOR_LOG=${THOR_LOG:-$THOR_ROOT/log}
+mkdir -p "$THOR_LOG"
 
 
 # --- Env setup (edit to your cluster) ---
@@ -25,10 +42,10 @@ mkdir -p logs "$HF_DATASETS_CACHE"
 BF16_FLAG="--bf16"
 
 # Paths
-DATA_PATH=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/fasta/IMG_train_09_5/   # or directory, or .txt
+DATA_PATH=${THOR_ROOT}/data/fasta/IMG_train_09_5/   # or directory, or .txt
 DATA=train_IMG_09_05.fasta
 DATA_VAL=test_IMG_09_05.fasta
-OUT_DIR=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/weights/esm1v_mlm_ur90_finetune
+OUT_DIR=${THOR_ROOT}/weights/esm1v_mlm_ur90_finetune
 MODEL_ID=facebook/esm1v_t33_650M_UR90S_1
 
 # Training hyperparams (tweak to your VRAM):
@@ -46,13 +63,13 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 # training image
-IMAGE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/env/singularity/esm-finetune.sif
+IMAGE=${THOR_IMAGE}
 
 # Binds:
 #  - current working dir (code, outputs, caches)
 #  - data directory (if not inside $PWD), e.g., /scratch or /proj
 # Add more -B mounts if your data lives elsewhere.
-BIND_OPTS="-B $PWD:$PWD -B $DATA_DIR:/data -B scratch:/scratch -B proj:/proj"
+BIND_OPTS="-B $PWD:$PWD -B $THOR_DATA:/data"
 
 # IMPORTANT: use absolute path inside container for torchrun
 TCR=/opt/conda/bin/torchrun

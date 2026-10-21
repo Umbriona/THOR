@@ -1,21 +1,38 @@
 #!/bin/bash
 #SBATCH --job-name=MLM_features_pickle
-#SBATCH --account=NAISS2025-22-904
+#SBATCH --account=CHANGE_ME     # site-specific; or delete this line
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:A100:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=0-24:00:00
 #SBATCH --output=%x.%j.out
 
+# ---------------------------------------------------------------------------
+# Paths. Nothing here needs editing for a normal clone: THOR_ROOT is resolved
+# from the directory you submitted from (sbatch) or the script's own location.
+# Override any of these by exporting them, e.g.
+#     THOR_DATA=/scratch/$USER/data sbatch compute_MLM_features_pickle.sh
+# ---------------------------------------------------------------------------
+if [ -z "${THOR_ROOT:-}" ]; then
+    _here=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}
+    THOR_ROOT=$(cd "$_here" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || THOR_ROOT=""
+    [ -n "$THOR_ROOT" ] || THOR_ROOT=$(cd "$_here/../../.." && pwd)
+fi
+THOR_IMAGE=${THOR_IMAGE:-$THOR_ROOT/thor.sif}
+THOR_DATA=${THOR_DATA:-$THOR_ROOT/data}
+THOR_RESULTS=${THOR_RESULTS:-$THOR_DATA/results}
+THOR_LOG=${THOR_LOG:-$THOR_ROOT/log}
+mkdir -p "$THOR_LOG"
 
-FILE_FASTA=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/fasta/IMG_train_09_5/test_IMG_09_05.fasta #${SLURM_ARRAY_TASK_ID}.fasta
 
-IMAGE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/env/singularity/esm-finetune.sif
+FILE_FASTA=${THOR_ROOT}/data/fasta/IMG_train_09_5/test_IMG_09_05.fasta #${SLURM_ARRAY_TASK_ID}.fasta
+
+IMAGE=${THOR_IMAGE}
 
 SCRIPT=compute_MLM_features.py
-DIR_FEATURE=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/data/features_mlm/IMG_test #non_redundant_v2
+DIR_FEATURE=${THOR_ROOT}/data/features_mlm/IMG_test #non_redundant_v2
 
-CHECKPOINT=/mimer/NOBACKUP/groups/snic2022-6-127/sandra/ThermalGAN/weights/esm1v_mlm_ur90_finetune/checkpoint-119432
+CHECKPOINT=${THOR_ROOT}/weights/esm1v_mlm_ur90_finetune/checkpoint-119432
 
 
 singularity exec --nv  ${IMAGE} /opt/conda/bin/python \
