@@ -131,9 +131,31 @@ Everything runs inside a single Singularity/Apptainer container, defined by
 export SINGULARITY_TMPDIR=$HOME/singularity_tmp && mkdir -p "$SINGULARITY_TMPDIR"
 singularity build --fakeroot thor.sif env/singularity/thor.recipe
 
-# check the image can actually run this repository
+# check the image can actually run this repository (needs a GPU node)
 bash env/singularity/verify_image.sh thor.sif
 ```
+
+> **Build on a login node, verify on a compute node.** The build installs
+> packages from PyPI, and compute nodes on most clusters have no outbound
+> internet — there, pip fails with `Could not find a version that satisfies the
+> requirement ... (from versions: none)`, which means the index was
+> unreachable, not that the version is missing. Verification goes the other
+> way: it wants the GPU that login nodes usually lack.
+>
+> If your site only permits builds on compute nodes, either set `http_proxy` /
+> `https_proxy` to the site proxy, or stage the wheels from a networked node
+> first:
+>
+> ```sh
+> pip download -d wheelhouse -r env/singularity/requirements.txt   # networked node
+> # then add to %post:  pip install --no-index --find-links=/wheelhouse ...
+> ```
+
+`verify_image.sh` goes past "do the packages import": it loads THOR's own
+modules inside the container and builds the generator and discriminator from
+`config/Cycle_gan/Reference_config.yaml`, which is where TensorFlow /
+tensorflow-addons version mismatches actually surface. It needs no weights, no
+data and no GPU beyond the device check.
 
 `verify_image.sh` goes past "do the packages import": it loads THOR's own
 modules inside the container and builds the generator and discriminator from

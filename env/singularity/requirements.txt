@@ -1,0 +1,60 @@
+# Python packages installed on top of the NGC TensorFlow 23.09 base image by
+# thor.recipe. Kept in sync with that recipe by hand.
+#
+# This file exists for two purposes:
+#   1. a readable record of the pinned versions;
+#   2. staging wheels for an offline build, where the build host has no
+#      outbound network:
+#
+#        # on a node with internet:
+#        pip download -d wheelhouse -r requirements.txt \
+#            --extra-index-url https://download.pytorch.org/whl/cu118
+#        # then in %post:
+#        pip install --no-index --find-links=/wheelhouse -r /requirements.txt
+#
+# Not a standalone environment: TensorFlow, numpy, h5py, scipy and the CUDA
+# runtime come from the base image and are deliberately NOT listed here.
+# Installing this file into a bare environment will not give you a working
+# THOR; build the container instead.
+
+# --- constraint ------------------------------------------------------------
+# TensorFlow 2.13.0+nv23.9 requires numpy<=1.24.3 and the base image's numba
+# requires numpy<1.25. Several packages below will pull numpy 1.26 unless held.
+numpy<1.25
+
+# --- TensorFlow side -------------------------------------------------------
+# 0.23.0 is the final tensorflow-addons release and the one whose supported
+# range starts at TF 2.13 (>=2.13.0,<2.16.0). Earlier releases refuse TF 2.13
+# at import regardless of their package metadata.
+tensorflow-addons==0.23.0
+tensorboard-plugin-profile==2.13.0
+
+# --- PyTorch (CUDA 11.8 wheels, to match the base) -------------------------
+# Needs: --extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
+
+# --- HuggingFace stack (ESM-1v) --------------------------------------------
+# Install these together: resolving them separately lets huggingface-hub drift
+# past the <1.0 ceiling transformers 4.41.2 requires.
+transformers==4.41.2
+tokenizers==0.19.1
+huggingface-hub==0.23.2
+datasets==2.20.0
+accelerate==0.33.0
+
+# --- Project dependencies ---------------------------------------------------
+biopython
+pandas
+PyYAML
+matplotlib
+scikit-learn
+simple_pid
+tqdm
+# 2.x: utils/layers_new.py and utils/layers_residual.py use the typeguard 2.x
+# @typechecked decorator, whose signature changed in 4.x.
+typeguard==2.12.1
+
+# --- cuDNN matching the TF build -------------------------------------------
+nvidia-cudnn-cu11==8.9.5.30
