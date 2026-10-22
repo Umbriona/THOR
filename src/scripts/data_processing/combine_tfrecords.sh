@@ -30,6 +30,6 @@ IMAGE=${THOR_IMAGE}
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${SRC_DIR}:/ThermalGAN \
---nv ${IMAGE}  python combine_tfrecords.py \
+--nv ${IMAGE}  python3 combine_tfrecords.py \
 
 #done

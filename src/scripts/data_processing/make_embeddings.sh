@@ -38,5 +38,5 @@ INPUT=${DATA_DIR}/best_variants_70_TM.fasta
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${SRC_DIR}:/ThermalGAN \
---nv ${IMAGE}  /bin/python3 make_embeddings.py \
+--nv ${IMAGE}  python3 make_embeddings.py \
 -i ${INPUT} -o ${RESULT} --max_entries=10000 --ID 0 #${SLURM_ARRAY_TASK_ID}

@@ -39,4 +39,4 @@ IMAGE=${THOR_IMAGE}
 
 ## RUN
 
-singularity  exec --bind  $(pwd),${BASE_DIR}:/ThermalGAN  --nv ${IMAGE} /opt/conda/bin/python ${TRAINING_SCRIPT} -c ${CONFIG_FILE} --gpu 0 -v
+singularity  exec --bind  $(pwd),${BASE_DIR}:/ThermalGAN  --nv ${IMAGE} python3 ${TRAINING_SCRIPT} -c ${CONFIG_FILE} --gpu 0 -v

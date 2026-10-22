@@ -56,7 +56,7 @@ do
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN \
---nv ${IMAGE}  python generate_thor_batch.py \
+--nv ${IMAGE}  python3 generate_thor_batch.py \
 --input ${INPUT} \
 '--store_softmax' \
 -v -g 0 \

@@ -38,5 +38,5 @@ IMAGE=${THOR_IMAGE}
 time singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${SRC_DIR}:/ThermalGAN \
---nv ${IMAGE}  python predict_et.py /data/best_variants_70.fasta /data/best_variants_70_TM.fasta
+--nv ${IMAGE}  python3 predict_et.py /data/best_variants_70.fasta /data/best_variants_70_TM.fasta
 #done

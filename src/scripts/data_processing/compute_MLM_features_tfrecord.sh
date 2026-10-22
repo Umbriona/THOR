@@ -36,7 +36,7 @@ DIR_FEATURE=${THOR_ROOT}/data/THOR_HUGE/records/train/Uniprot_enzymes #non_redun
 CHECKPOINT=${THOR_ROOT}/weights/esm1v_mlm_ur90_finetune/checkpoint-119432 #esm1v_mlm_ur90_finetune/checkpoint-119432 #esm1v_mlm_ur90_finetune/checkpoint-119432 # prot_bert_bfd #esm1v_mlm_ur90_finetune/checkpoint-119432
 
 
-singularity exec --nv  ${IMAGE} /opt/conda/bin/python \
+singularity exec --nv  ${IMAGE} python3 \
  ${SCRIPT} \
  -i ${FILE_FASTA} \
  -o ${DIR_FEATURE} \

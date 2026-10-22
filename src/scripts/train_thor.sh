@@ -65,6 +65,6 @@ CONFIG=${DATA_DIR}/config/config_${SLURM_ARRAY_TASK_ID}.yaml
 singularity exec \
 -H $(pwd) \
 --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN \
---nv ${IMAGE}  python train_thor.py \
+--nv ${IMAGE}  python3 train_thor.py \
 -c ${CONFIG} -v
 #done

@@ -35,7 +35,7 @@ DIR_FEATURE=${THOR_ROOT}/data/features_mlm/IMG_test #non_redundant_v2
 CHECKPOINT=${THOR_ROOT}/weights/esm1v_mlm_ur90_finetune/checkpoint-119432
 
 
-singularity exec --nv  ${IMAGE} /opt/conda/bin/python \
+singularity exec --nv  ${IMAGE} python3 \
  ${SCRIPT} \
  -i ${FILE_FASTA} \
  -o ${DIR_FEATURE} \

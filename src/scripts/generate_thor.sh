@@ -64,7 +64,7 @@ singularity exec \
   -H "$(pwd)" \
   --bind ${DATA_DIR}:/data,${RESULTS_DIR}:/results,${LOG_DIR}:/log,${SRC_DIR}:/ThermalGAN \
   --nv ${IMAGE} \
-  python /ThermalGAN/src/scripts/generate_thor.py \
+  python3 /ThermalGAN/src/scripts/generate_thor.py \
     --run_dir ${RUN_DIR} \
     --fasta ${FASTA} \
     --weights weights/epoch_${EPOCH} \
