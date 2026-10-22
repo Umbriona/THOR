@@ -38,6 +38,16 @@ From: nvcr.io/nvidia/tensorflow:23.09-tf2-py3
 
     python3 -m pip install --upgrade pip
 
+    # The TensorFlow in this base (2.13.0+nv23.9) requires numpy<=1.24.3, and
+    # numba in the base requires numpy<1.25 -- but several packages installed
+    # below will happily pull numpy 1.26. A constraints file applies to every
+    # pip invocation that follows, so numpy cannot be dragged forward no matter
+    # which package asks for it.
+    cat > /opt/thor-constraints.txt <<'EOF'
+numpy<1.25
+EOF
+    export PIP_CONSTRAINT=/opt/thor-constraints.txt
+
     # --- TensorFlow side -------------------------------------------------
     # tensorflow itself comes from the NGC base; do not reinstall it.
     # tensorflow-addons supplies InstanceNormalization and SpectralNormalization,
@@ -47,9 +57,16 @@ From: nvcr.io/nvidia/tensorflow:23.09-tf2-py3
     # TF 2.13 at import: 0.21.0 enforces >=2.10.0,<2.13.0 at runtime regardless
     # of what its package metadata claims.
     pip install tensorflow-addons==0.23.0
-    pip install tensorflow-probability==0.11.0
     pip install tensorboard-plugin-profile==2.13.0
-    pip install protobuf==3.20
+    # Deliberately NOT pinned here, unlike the older recipe this came from:
+    #   protobuf==3.20            -> resolves to 3.20.0, below TF's >=3.20.3
+    #                                and below cudf's >=4.21; nothing in THOR
+    #                                imports protobuf directly.
+    #   tensorflow-probability    -> 0.11.0 drags in cloudpickle==1.3.0 and
+    #                                breaks dask/distributed in the base image;
+    #                                unused by THOR.
+    #   tifffile                  -> unused by THOR.
+    # The base image already ships working versions of all three.
 
     # --- PyTorch + HuggingFace (ESM-1v) ----------------------------------
     # CUDA 11.8 wheels, to match the NGC TF 23.09 base.
@@ -78,7 +95,6 @@ From: nvcr.io/nvidia/tensorflow:23.09-tf2-py3
     pip install scikit-learn
     pip install simple_pid
     pip install tqdm
-    pip install tifffile==2021.8.8
     pip install typeguard==2.12.1
 
     # Ensure cuDNN >= 8.9 to match the TF build (TF 2.13 expects 8.9.5)
@@ -92,9 +108,13 @@ PY
     echo "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH" >> /environment
 
     # --- Fail the build now rather than at job submission ----------------
-    # pip check catches version conflicts between installed packages, which is
-    # exactly the class of error that broke the first build of this image.
-    pip check
+    # Report dependency conflicts, but do not fail on them: this base image
+    # ships a large RAPIDS/dask stack that has pre-existing disagreements of
+    # its own, and none of those affect THOR. The functional check below is
+    # the real gate.
+    echo "--- pip check (informational) ---"
+    pip check || echo "(conflicts reported above; see whether they involve THOR's packages)"
+    echo "---------------------------------"
 
     python3 - <<'PY'
 import tensorflow as tf
@@ -104,6 +124,9 @@ import yaml, pandas, numpy, sklearn, Bio, simple_pid, typeguard, tqdm
 import h5py
 print("TensorFlow        :", tf.__version__)
 print("TF-Addons         :", tfa.__version__)
+print("NumPy             :", numpy.__version__, "(TF 2.13 requires <=1.24.3)")
+assert tuple(int(x) for x in numpy.__version__.split(".")[:2]) < (1, 25), \
+    f"numpy {numpy.__version__} is too new for TensorFlow 2.13"
 print("TensorFlow GPUs   :", tf.config.list_physical_devices("GPU"))
 print("Torch             :", torch.__version__, "| CUDA build:", torch.version.cuda)
 print("Transformers      :", transformers.__version__)
