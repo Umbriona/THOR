@@ -23,10 +23,9 @@
 numpy<1.25
 
 # --- TensorFlow side -------------------------------------------------------
-# 0.23.0 is the final tensorflow-addons release and the one whose supported
-# range starts at TF 2.13 (>=2.13.0,<2.16.0). Earlier releases refuse TF 2.13
-# at import regardless of their package metadata.
-tensorflow-addons==0.23.0
+# tensorflow-addons is deliberately NOT listed: THOR never constructs tfa
+# layers, it has no aarch64 wheels, and it reached end of life in May 2024.
+# See src/utils/tfa_compat.py.
 tensorboard-plugin-profile==2.13.0
 
 # --- PyTorch (CUDA 11.8 wheels, to match the base) -------------------------

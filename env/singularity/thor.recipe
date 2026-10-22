@@ -50,13 +50,14 @@ EOF
 
     # --- TensorFlow side -------------------------------------------------
     # tensorflow itself comes from the NGC base; do not reinstall it.
-    # tensorflow-addons supplies InstanceNormalization and SpectralNormalization,
-    # and is imported unconditionally by utils/models_cyclegan_self_loss.py.
-    # 0.23.0 is the last release and the one whose supported range starts at
-    # TF 2.13 (>=2.13.0,<2.16.0), matching this base. Earlier releases refuse
-    # TF 2.13 at import: 0.21.0 enforces >=2.10.0,<2.13.0 at runtime regardless
-    # of what its package metadata claims.
-    pip install tensorflow-addons==0.23.0
+    # NOT installed: tensorflow-addons.
+    # THOR never constructs tfa layers - the only code that would is the
+    # disabled CycleGan.load_models() - and spectral normalisation comes from
+    # the vendored utils/layers_new.SpectralNormalization. The model modules
+    # import it through utils/tfa_compat.py, which tolerates its absence.
+    # This matters because tensorflow-addons publishes no aarch64 wheels, so
+    # requiring it would make this image unbuildable on ARM GPU nodes, and
+    # because the project reached end of life in May 2024.
     pip install tensorboard-plugin-profile==2.13.0
     # Deliberately NOT pinned here, unlike the older recipe this came from:
     #   protobuf==3.20            -> resolves to 3.20.0, below TF's >=3.20.3
@@ -138,12 +139,10 @@ PY
 
     python3 - <<'PY'
 import tensorflow as tf
-import tensorflow_addons as tfa
 import torch, transformers, datasets, accelerate
 import yaml, pandas, numpy, sklearn, Bio, simple_pid, typeguard, tqdm
 import h5py
 print("TensorFlow        :", tf.__version__)
-print("TF-Addons         :", tfa.__version__)
 print("NumPy             :", numpy.__version__, "(TF 2.13 requires <=1.24.3)")
 assert tuple(int(x) for x in numpy.__version__.split(".")[:2]) < (1, 25), \
     f"numpy {numpy.__version__} is too new for TensorFlow 2.13"
@@ -152,10 +151,7 @@ print("Torch             :", torch.__version__, "| CUDA build:", torch.version.c
 print("Transformers      :", transformers.__version__)
 print("Datasets          :", datasets.__version__)
 print("Accelerate        :", accelerate.__version__)
-# The two layers THOR actually needs from addons
-tfa.layers.InstanceNormalization()
-tfa.layers.SpectralNormalization(tf.keras.layers.Conv1D(4, 3))
-print("tfa layers        : OK")
+print("Platform          :", __import__("platform").machine())
 PY
 
 %runscript

@@ -1,7 +1,10 @@
 import os
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
+# tensorflow-addons is optional: see utils/tfa_compat.py. THOR never constructs
+# tfa layers (the only code that would is the disabled CycleGan.load_models),
+# and tfa has no aarch64 wheels, so it must not be a hard import.
+from utils.tfa_compat import tfa
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Conv1D,Conv1DTranspose, Dense, Flatten, Activation, Embedding, Input, LeakyReLU, ReLU, LayerNormalization, BatchNormalization, Softmax, Dropout, Concatenate, Layer
 from utils.layers_new import SelfAttention, SelfAttentionSN, GumbelSoftmax, SpectralNormalization

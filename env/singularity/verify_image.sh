@@ -49,10 +49,8 @@ print("third-party packages")
 
 def _tf():
     import tensorflow as tf
-    return tf.__version__
-def _tfa():
-    import tensorflow_addons as tfa
-    return tfa.__version__
+    import platform
+    return f"{tf.__version__} on {platform.machine()}"
 def _torch():
     import torch
     return f"{torch.__version__}, cuda build {torch.version.cuda}"
@@ -67,7 +65,6 @@ def _misc():
     return "yaml pandas numpy sklearn Bio simple_pid typeguard tqdm h5py"
 
 step("tensorflow",        _tf)
-step("tensorflow_addons", _tfa)
 step("torch",             _torch)
 step("transformers",      _tr)
 step("datasets",          _ds)
@@ -105,12 +102,17 @@ step("CycleGAN module",   _cyclegan)
 step("generator module",  _atte)
 step("data/loss modules", _pre)
 
-print("\nlayer construction (where TF / tf-addons mismatches bite)")
-def _instnorm():
-    import tensorflow as tf, tensorflow_addons as tfa
-    layer = tfa.layers.InstanceNormalization()
-    layer(tf.zeros((1, 16, 8)))
-    return "InstanceNormalization"
+print("\nlayer construction")
+def _tfa_optional():
+    # tensorflow-addons is deliberately absent (no aarch64 wheels, EOL since
+    # May 2024). THOR must import cleanly without it; utils/tfa_compat.py
+    # supplies a placeholder that only raises if tfa is genuinely used.
+    from utils.tfa_compat import tfa
+    try:
+        import tensorflow_addons  # noqa: F401
+        return f"tfa installed ({tensorflow_addons.__version__}); not required"
+    except ImportError:
+        return "tfa absent, as expected; shim active"
 def _specnorm():
     import tensorflow as tf
     from utils.layers_new import SpectralNormalization
@@ -122,9 +124,9 @@ def _gumbel():
     from utils.layers_new import GumbelSoftmax
     GumbelSoftmax()(tf.zeros((1, 16, 21)))
     return "GumbelSoftmax"
-step("tfa InstanceNormalization", _instnorm)
-step("SpectralNormalization",     _specnorm)
-step("GumbelSoftmax",             _gumbel)
+step("tfa optional-import",   _tfa_optional)
+step("SpectralNormalization", _specnorm)
+step("GumbelSoftmax",         _gumbel)
 
 print("\nbuild the models from the reference config")
 # Built exactly as utils/models_cyclegan_self_loss.py does (lines 63-66).
