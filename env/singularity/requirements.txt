@@ -28,11 +28,23 @@ numpy<1.25
 # See src/utils/tfa_compat.py.
 tensorboard-plugin-profile==2.13.0
 
-# --- PyTorch (CUDA 11.8 wheels, to match the base) -------------------------
-# Needs: --extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.1.2
-torchvision==0.16.2
-torchaudio==2.1.2
+# --- PyTorch ----------------------------------------------------------------
+# ARCHITECTURE-DEPENDENT; thor.recipe selects based on `uname -m`.
+#
+#   x86_64  : torch==2.1.2  torchvision==0.16.2  torchaudio==0.16.2
+#             --extra-index-url https://download.pytorch.org/whl/cu118
+#   aarch64 : torch==2.5.1  torchvision==0.20.1  torchaudio==2.5.1
+#             --index-url https://download.pytorch.org/whl/cu124
+#
+# CUDA-enabled aarch64 wheels exist only from torch 2.4 and only on the
+# cu124/cu126 indexes. PyPI's aarch64 wheels are CPU-only at every version, so
+# the aarch64 line must use --index-url (not --extra-index-url): PyPI also has
+# torch 2.5.1 for aarch64, and pip may prefer it when the versions match.
+#
+# Listed here without pins because the correct set depends on the build host.
+torch
+torchvision
+torchaudio
 
 # --- HuggingFace stack (ESM-1v) --------------------------------------------
 # Install these together: resolving them separately lets huggingface-hub drift
@@ -56,4 +68,6 @@ tqdm
 typeguard==2.12.1
 
 # --- cuDNN matching the TF build -------------------------------------------
+# x86_64 only - no 8.9.x release is published for aarch64. thor.recipe treats
+# this as optional and falls back to the cuDNN in the base image.
 nvidia-cudnn-cu11==8.9.5.30

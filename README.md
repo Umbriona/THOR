@@ -163,11 +163,22 @@ modules inside the container and builds the generator and discriminator from
 tensorflow-addons version mismatches actually surface. It needs no weights, no
 data and no GPU.
 
-It bootstraps from the public NGC TensorFlow 23.09 image (TensorFlow 2.13,
-CUDA 11.8, cuDNN 8.9) and adds PyTorch 2.1.2 with HuggingFace Transformers for
-ESM-1v, plus `tensorflow-addons`, `simple_pid`, `biopython` and the rest. The
-build ends with an import check, so a missing dependency fails the build rather
-than a queued job.
+It bootstraps from the public NGC TensorFlow 23.09 image and adds PyTorch with
+HuggingFace Transformers for ESM-1v, plus `simple_pid`, `biopython` and the
+rest. The build ends with an import check, so a missing dependency fails the
+build rather than a queued job.
+
+**x86_64 and ARM are both supported.** The NGC base is multi-arch, and the
+recipe selects PyTorch accordingly — CUDA 11.8 wheels on x86_64, CUDA 12.4 on
+aarch64, where CUDA-enabled wheels exist only from torch 2.4 onward. TensorFlow
+is identical on both. Two things to know if you are on ARM:
+
+- PyPI's aarch64 PyTorch wheels are **CPU-only at every version**, so a plain
+  `pip install torch` there produces a build that silently runs ESM on the CPU.
+  The recipe pins PyTorch's own index to avoid this, and both the build and
+  `verify_image.sh` fail loudly if CUDA support is missing.
+- `tensorflow-addons` has no aarch64 wheels at all. THOR no longer requires it;
+  see `src/utils/tfa_compat.py`.
 
 One image covers training, generation, ET training and prediction, ESM-1v
 fine-tuning and feature computation:

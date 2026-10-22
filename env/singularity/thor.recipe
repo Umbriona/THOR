@@ -70,9 +70,23 @@ EOF
     # The base image already ships working versions of all three.
 
     # --- PyTorch + HuggingFace (ESM-1v) ----------------------------------
-    # CUDA 11.8 wheels, to match the NGC TF 23.09 base.
-    pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
-        --extra-index-url https://download.pytorch.org/whl/cu118
+    # PyTorch is the only architecture-dependent piece. CUDA-enabled aarch64
+    # wheels exist, but only from 2.4 onwards and only on the cu124/cu126
+    # indexes -- PyPI's aarch64 wheels are CPU-only at EVERY version, so a
+    # plain `pip install torch` on ARM silently yields a CPU build.
+    #
+    # Note --index-url, not --extra-index-url: PyPI also carries torch 2.5.1
+    # for aarch64 (CPU-only), and with an extra index pip may pick that one
+    # since the version matches. Restricting the index avoids that trap.
+    ARCH=$(uname -m)
+    echo "[info] building for ${ARCH}"
+    if [ "$ARCH" = "aarch64" ]; then
+        pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+            --index-url https://download.pytorch.org/whl/cu124
+    else
+        pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+            --extra-index-url https://download.pytorch.org/whl/cu118
+    fi
 
     # The whole HuggingFace stack goes in ONE pip call so the resolver sees
     # every constraint at once. Installing datasets/accelerate separately
@@ -118,14 +132,23 @@ PY
     pip install tqdm
     pip install typeguard==2.12.1
 
-    # Ensure cuDNN >= 8.9 to match the TF build (TF 2.13 expects 8.9.5)
-    pip install nvidia-cudnn-cu11==8.9.5.30
-    CUDNN_PATH=$(python3 - <<'PY'
+    # cuDNN. The NGC base already ships a cuDNN matching its TensorFlow build,
+    # so this pip package is belt-and-braces, inherited from the older recipe.
+    # It is published for x86_64 only: on aarch64 pip offers no 8.9.x release
+    # at all, so install it when available and otherwise fall back to the
+    # base image's copy rather than failing the build.
+    if pip install nvidia-cudnn-cu11==8.9.5.30; then
+        CUDNN_PATH=$(python3 - <<'PY'
 import nvidia.cudnn, os
 print(os.path.join(os.path.dirname(nvidia.cudnn.__file__), "lib"))
 PY
 )
-    echo "export LD_LIBRARY_PATH=${CUDNN_PATH}:\$LD_LIBRARY_PATH" >> /environment
+        echo "export LD_LIBRARY_PATH=${CUDNN_PATH}:\$LD_LIBRARY_PATH" >> /environment
+        echo "[info] using pip-installed cuDNN at ${CUDNN_PATH}"
+    else
+        echo "[info] nvidia-cudnn-cu11 8.9.5.30 is not available for this"
+        echo "[info] platform; using the cuDNN already present in the base image."
+    fi
     echo "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:\$LD_LIBRARY_PATH" >> /environment
 
     # --- Fail the build now rather than at job submission ----------------
@@ -152,6 +175,30 @@ print("Transformers      :", transformers.__version__)
 print("Datasets          :", datasets.__version__)
 print("Accelerate        :", accelerate.__version__)
 print("Platform          :", __import__("platform").machine())
+
+# PyTorch with CUDA is published for x86_64 only at this version. On aarch64
+# pip silently installs a CPU-only build, which would otherwise surface much
+# later as an inexplicably slow or failing ESM step. Say so loudly now.
+print("PyTorch           :", torch.__version__, "| CUDA:", torch.version.cuda or "NONE (CPU-only)")
+if torch.version.cuda is None:
+    print("")
+    print("=" * 70)
+    print("WARNING: this PyTorch build has NO CUDA support (CPU only).")
+    print(f"         platform: {__import__('platform').machine()}")
+    print("")
+    print("  Unaffected - these use TensorFlow only:")
+    print("      train_thor.py, train_et_regressor.py, predict_et.py,")
+    print("      generate_thor_batch.py")
+    print("")
+    print("  Affected - these run ESM through PyTorch and will fall back to")
+    print("  CPU, which is far too slow to be practical:")
+    print("      generate_thor.py, compute_MLM_features.py,")
+    print("      finetune_ESM.py, make_embeddings.py")
+    print("")
+    print("  CUDA wheels for torch 2.1.2 exist for linux_x86_64 only. On ARM")
+    print("  you need a newer PyTorch built for aarch64/sbsa; see the README.")
+    print("=" * 70)
+    print("")
 PY
 
 %runscript

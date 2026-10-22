@@ -75,8 +75,18 @@ def _gpu_tf():
     import tensorflow as tf
     return f"{len(tf.config.list_physical_devices('GPU'))} device(s) visible to TF"
 def _gpu_torch():
-    import torch
-    return f"torch.cuda.is_available() = {torch.cuda.is_available()}"
+    import torch, platform
+    if torch.version.cuda is None:
+        raise RuntimeError(
+            f"PyTorch has no CUDA support (CPU-only build) on "
+            f"{platform.machine()}. TensorFlow-only scripts (train_thor.py, "
+            "train_et_regressor.py, predict_et.py, generate_thor_batch.py) are "
+            "unaffected, but generate_thor.py, compute_MLM_features.py, "
+            "finetune_ESM.py and make_embeddings.py run ESM through PyTorch and "
+            "would fall back to CPU. CUDA wheels for torch 2.1.2 are x86_64-only."
+        )
+    return (f"cuda {torch.version.cuda}, "
+            f"torch.cuda.is_available() = {torch.cuda.is_available()}")
 step("tensorflow GPUs", _gpu_tf)
 step("torch CUDA",      _gpu_torch)
 
