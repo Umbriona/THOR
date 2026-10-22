@@ -87,6 +87,26 @@ EOF
         datasets==2.20.0 \
         accelerate==0.33.0
 
+    # The base image ships NVIDIA's transformer_engine, compiled against the
+    # PyTorch that came with it. Installing PyTorch from PyPI above leaves
+    # transformer_engine's compiled extension (transformer_engine_extensions)
+    # missing, so importing it raises ModuleNotFoundError. accelerate detects
+    # the package purely by name and imports it, which makes `import accelerate`
+    # fail -- and that breaks finetune_ESM.py. Nothing in THOR uses
+    # transformer_engine, so remove the broken package outright.
+    pip uninstall -y transformer-engine transformer_engine 2>/dev/null || true
+    python3 - <<'PY'
+import importlib.util, pathlib, shutil
+spec = importlib.util.find_spec("transformer_engine")
+if spec is not None and spec.submodule_search_locations:
+    for loc in list(spec.submodule_search_locations):
+        p = pathlib.Path(loc)
+        print(f"[cleanup] removing leftover {p}")
+        shutil.rmtree(p, ignore_errors=True)
+else:
+    print("[cleanup] transformer_engine not present")
+PY
+
     # --- Project dependencies --------------------------------------------
     pip install biopython
     pip install pandas
