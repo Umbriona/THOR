@@ -20,8 +20,19 @@ and otherwise a placeholder that raises a clear, actionable error if anything
 ever touches it.
 """
 
+import warnings
+
 try:  # pragma: no cover - depends on the platform
-    import tensorflow_addons as tfa  # noqa: F401
+    # Some base images (notably the NGC TensorFlow containers) ship their own
+    # tensorflow-addons, and the version they carry is not always matched to
+    # the TensorFlow they carry -- NGC 23.09 pairs tfa 0.21.0 with TF 2.13,
+    # which tfa itself reports as unsupported. Because THOR never calls into
+    # tfa, those warnings are pure noise that makes a healthy image look
+    # broken, so they are suppressed at import. Anything that genuinely uses
+    # tfa will still behave exactly as tfa decides.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import tensorflow_addons as tfa  # noqa: F401
 
 except ImportError:  # pragma: no cover
 

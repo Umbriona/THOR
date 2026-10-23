@@ -123,7 +123,18 @@ and what replaced it.
 
 ## Dependencies
 
-Everything runs inside a single Singularity/Apptainer container, defined by
+Everything runs inside a single Singularity/Apptainer container. The quickest
+route is to pull the prebuilt image, published for both x86_64 and ARM — the
+matching one is selected for you:
+
+```sh
+singularity pull thor.sif docker://ghcr.io/umbriona/thor:latest
+
+# check it can actually run this repository (on a GPU node)
+bash env/singularity/verify_image.sh thor.sif
+```
+
+To build it yourself instead, from
 [`env/singularity/thor.recipe`](env/singularity/thor.recipe):
 
 ```sh
@@ -131,7 +142,6 @@ Everything runs inside a single Singularity/Apptainer container, defined by
 export SINGULARITY_TMPDIR=$HOME/singularity_tmp && mkdir -p "$SINGULARITY_TMPDIR"
 singularity build --fakeroot thor.sif env/singularity/thor.recipe
 
-# check the image can actually run this repository (needs a GPU node)
 bash env/singularity/verify_image.sh thor.sif
 ```
 
