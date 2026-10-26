@@ -1,0 +1,162 @@
+# Fine-tune a pretrained THOR model on malate dehydrogenase.
+#
+# A small, runnable example rather than a reproduction of the published
+# training run. See data/example_MDH/README.md for what the data is and what
+# this does and does not demonstrate.
+#
+# Before running, set CycleGan.saved below to the pretrained run you downloaded
+# from Hugging Face. Everything else works unedited.
+#
+#     bash data/example_MDH/prepare_example.sh       # ESM features -> TFRecords
+#     singularity exec --nv thor.sif python3 \
+#         /ThermalGAN/src/scripts/train_thor.py \
+#         -c /ThermalGAN/config/Cycle_gan/MDH_finetune.yaml
+#
+# Paths are the ones visible INSIDE the container: the wrappers bind the
+# repository at /ThermalGAN and the data directory at /data.
+
+CycleGan:
+    # ---- fine-tuning ------------------------------------------------------
+    # Point this at the downloaded pretrained run (the directory holding
+    # config.yaml and weights/). Leave "none" to train from scratch instead,
+    # which on this little dataset will not produce anything useful.
+    saved: "/data/pretrained"
+    # Which published model to start from. They are named by the target
+    # sequence identity they were trained for: weights_70, _75, _80, _85, _90,
+    # _95. All six share one architecture and differ only in `lambda_self`.
+    saved_weights: "weights_85"
+    # Alternative, for continuing one of your own training runs instead:
+    #   saved_epoch: 39   -> <saved>/weights/epoch_39/
+    # With neither key, the end-of-run checkpoint
+    # <saved>/weights/cycle_gan_model_final is used and the PID controllers
+    # start fresh (it holds no controller state).
+
+    # ---- run length -------------------------------------------------------
+    # Sized for the example: 100 steps x 20 epochs = 2000 steps. Without
+    # steps_per_epoch, an "epoch" defaults to a budget of 1e6 sequences, which
+    # on 3197 training sequences means cycling the data hundreds of times.
+    steps_per_epoch: 100
+    epochs: 20
+    batch_size: 32            # 512 in the published runs; small here because
+                              # there are only 60 thermophilic training seqs
+    val_interval_steps: 25
+    write_interval_steps: 50
+
+    # ---- objective (unchanged from Reference_config.yaml) -----------------
+    Vocab_size: 21
+    lambda_cycle: 1
+    lambda_id: 0
+    lambda_evo_G: 0.5
+    lambda_evo_F: 0.5
+    # MUST match the model named in saved_weights above: this is the PID
+    # setpoint that holds generated variants near the target identity, and it
+    # is the only parameter distinguishing the six published models. Loading
+    # weights_70 while leaving this at 0.85 would pull the model away from what
+    # it was trained to do. weights_NN  <->  lambda_self: 0.NN
+    lambda_self: 0.85
+    PID_P: 5
+    PID_I: 0.5
+    PID_D: 0.1
+    dir: "weights/model"
+    dynamic: True
+    load_model: False
+    Fractional_training: 5
+    'BERT': "all"
+    concat_modalities_discriminator: False
+    concat_modalities_generator: False
+
+    # ---- learning-rate schedule ------------------------------------------
+    # Scaled to a 2000-step run. Warming up over 10% of the run matters more
+    # when fine-tuning than when training from scratch: the optimizer state is
+    # fresh (only weights and PID state are restored), so a cold start at full
+    # learning rate can undo the pretrained weights in the first few steps.
+    LR_Schedule:
+        warmup:
+            steps: 200          # 10% of the run
+            start_factor: 0.05
+        decay:
+            strategy: cosine
+            start_step: 400     # after warmup has settled
+            decay_steps: 1600   # covers the remainder of the run
+            alpha: 0.1
+        min_lr:
+            factor: 0.05
+
+    # ---- architecture: must match the pretrained model --------------------
+    Generator:
+        input_projection: True
+        max_length: 512
+        vocab_size: 21
+        filters_down_stack: [256, 512, 768, 768, 1024]
+        norm: "Layer"
+    Discriminator:
+        input_projection: True
+        max_length: 512
+        vocab_size: 21
+        filters: [256, 512, 1024]
+        norm: "Instance"
+
+    Losses:
+        loss: Non-Reducing
+    Optimizers:
+        optimizer_discriminator: Adam
+        learning_rate_discriminator: 1e-5
+        beta_1_discriminator: 0.5
+        optimizer_generator: Adam
+        learning_rate_generator: 2e-5
+        beta_1_generator: 0.5
+    Metrics:
+
+# The ET (environmental temperature) regressor used as the temperature critic.
+# Must match the ensemble weights, which come from the same Hugging Face repo.
+Classifier:
+    vocab_size: 21
+    model_type: "ResPreAct"
+    n_layers: 9
+    max_length: 512
+    filters: [64, 64, 64, 128, 128, 128, 256, 256, 256]
+    kernels: [3, 3, 3, 3, 3, 3, 3, 3, 3]
+    dilations: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+    strides: [1, 2, 2, 1, 2, 2, 1, 1, 2]
+    l1: 0.0
+    l2: 0.0
+    rate: 0.2
+    use_attention: True
+    attention_loc: 5
+    use_global_pos: False
+    temporal_encode: 21
+    learning_rate: 0.0001
+    batch_size: 64
+    dir: "../weights"
+
+# Records written by data/example_MDH/prepare_example.sh.
+# n_shards and shards are vestigial - the code that read them is commented out
+# in utils/preprocessing.py - but are kept so the schema matches other configs.
+Data_meso:
+    max_length: 512
+    max_samples: 4000000
+    base_dir: '/data/example_MDH/records/'
+    train_dir: 'meso_train/*.tfrecord.gz'
+    val_dir: 'meso_val/*.tfrecord.gz'
+    n_shards: 1
+    shards: 1
+    records_type: 'ESM'
+
+Data_thermo:
+    max_length: 512
+    max_samples: 4000000
+    base_dir: '/data/example_MDH/records/'
+    train_dir: 'thermo_train/*.tfrecord.gz'
+    val_dir: 'thermo_val/*.tfrecord.gz'
+    n_shards: 1
+    shards: 1
+    records_type: 'ESM'
+
+# test_meso / test_target are BLAST databases built once per run and queried
+# each epoch to track identity between generated and natural sequences.
+Log:
+    base_dir: "/data/log"
+    test_meso: '/data/example_MDH/meso_train.fasta'
+    test_target: '/data/example_MDH/thermo_train.fasta'
+Results:
+    base_dir: "/data/results"

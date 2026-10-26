@@ -49,13 +49,15 @@ acquired them.
 
 </details>
 
-## The three models
+## The models
 
-| Model | What it is | Trained by |
+Two are trained here; the third is used off the shelf.
+
+| Model | What it is | Where it comes from |
 |---|---|---|
 | **THOR generator** | CycleGAN generator + discriminators over sequence space | `src/scripts/train_thor.sh` |
 | **ET regressor** | CNN predicting environmental temperature from sequence; used as the GAN's temperature critic and to score variants | `src/scripts/train_et_regressor.sh` |
-| **ESM-1v (fine-tuned)** | Masked-LM providing per-position substitution probabilities | `src/scripts/finetune_ESM.sh` |
+| **ESM-1v** | Masked-LM providing per-position substitution probabilities | used as published — `facebook/esm1v_t33_650M_UR90S_1` |
 
 ## Quick start
 
@@ -69,14 +71,22 @@ To run locally, generating variants from a FASTA needs only a trained run
 directory — no TFRecord preprocessing:
 
 ```sh
+# pretrained models, named by the target sequence identity they hold
+huggingface-cli download Umbriona/THOR --local-dir pretrained/
+
 cd src/scripts
 python generate_thor.py \
-    --run_dir    <results/TIMESTAMPconfig_NN.yaml> \  # trained run: config.yaml + weights/
-    --weights    weights/epoch_39 \                   # relative to --run_dir
+    --run_dir    ../../pretrained/weights_85 \
     --fasta      <input.fasta> \
     --replicates 10 \
     --output_dir <out/>
 ```
+
+Each `weights_NN/` holds its own `config.yaml` beside the weights, so pointing
+`--run_dir` at it is all that is needed. `NN` is the target sequence identity:
+**70, 75, 80, 85, 90, 95** — lower keeps less of the input sequence, higher
+stays closer to it. For one of your own training runs, `--run_dir` is the
+timestamped results directory and `--weights` is `weights/epoch_<n>`.
 
 This computes ESM likelihoods inline, runs the generator, and writes a FASTA of
 variants plus per-variant metrics (generator and ESM negative log-likelihood,
@@ -99,6 +109,23 @@ CycleGan:
     saved: "/path/to/results/20251218-225521config_67.yaml"
     # saved_epoch: 39     # optional: a specific epoch, else the final checkpoint
 ```
+
+### A worked example
+
+[`data/example_MDH/`](data/example_MDH/) ships a small malate dehydrogenase set
+(3553 sequences, split into train/validation for both classes) so you can run
+the fine-tuning path end to end without assembling data first:
+
+```sh
+bash data/example_MDH/prepare_example.sh          # ESM features -> TFRecords
+singularity exec --nv thor.sif python3 \
+    /ThermalGAN/src/scripts/train_thor.py \
+    -c /ThermalGAN/config/Cycle_gan/MDH_finetune.yaml
+```
+
+The config is sized for a demonstration — 2000 steps, warm-started from the
+published weights. See [`data/example_MDH/README.md`](data/example_MDH/README.md)
+for what it does and does not show.
 
 Full descriptions of every script and its arguments: **[`src/README.md`](src/README.md)**.
 

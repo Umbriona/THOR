@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 import os, sys
+import re
 import math
 import argparse
 import yaml
@@ -303,6 +304,61 @@ class WarmupDecayLRScheduler:
         return min_lrs
 
 
+def resolve_pretrained(config):
+    """
+    Work out which checkpoint a fine-tuning run should start from.
+
+    Returns (path, kind), where kind is one of:
+
+        'gan'    a directory of per-model .h5 files written by save_gan():
+                 generator_G.h5, generator_F.h5, discriminator_x.h5,
+                 discriminator_y.h5, plus PID_*.pkl. Loaded with load_gan().
+        'keras'  the end-of-run checkpoint written by save_weights().
+                 Loaded with load_weights().
+
+    or (None, None) to train from scratch.
+
+    Read from config['CycleGan']:
+
+        saved          the previous run's directory (the one holding config.yaml)
+        saved_weights  subdirectory of `saved` holding the weights, e.g.
+                       "weights_85" for the published target-identity-85 model
+        saved_epoch    shorthand for saved_weights = "weights/epoch_<n>", which
+                       is the layout train_thor.py writes during training
+
+    `saved_weights` wins if both are given.
+    """
+    cfg = config['CycleGan']
+    saved = cfg.get('saved', '')
+    if saved in (None, '', 'none', 'None'):
+        return None, None
+
+    weights = cfg.get('saved_weights', None)
+    if weights not in (None, '', 'none', 'None'):
+        # The published models are named weights_<identity>, and the identity
+        # they were trained to hold is lambda_self (the PID setpoint). Loading
+        # one while lambda_self says something else is not an error - you may
+        # intend to retarget - but it is far more often a mistake, and it fails
+        # silently by producing variants at the wrong identity. Say so.
+        m = re.fullmatch(r"weights_(\d{2})", str(weights).strip().rstrip('/'))
+        if m:
+            expected = int(m.group(1)) / 100.0
+            actual = cfg.get('lambda_self', None)
+            if actual is not None and abs(float(actual) - expected) > 1e-6:
+                print(f"WARNING: saved_weights={weights!r} was trained with "
+                      f"lambda_self={expected}, but this config sets "
+                      f"lambda_self={actual}. Set lambda_self={expected} to "
+                      f"keep the model's target identity, or ignore this if "
+                      f"you are deliberately retargeting.")
+        return os.path.join(saved, str(weights)), 'gan'
+
+    epoch = cfg.get('saved_epoch', None)
+    if epoch not in (None, '', 'none', 'None'):
+        return os.path.join(saved, 'weights', f"epoch_{epoch}"), 'gan'
+
+    return os.path.join(saved, 'weights', 'cycle_gan_model_final'), 'keras'
+
+
 def train(config, model, data, time, classifyer, strategy=None):
 
     #file writers
@@ -387,6 +443,30 @@ def train(config, model, data, time, classifyer, strategy=None):
 
     print("Created PID controlers")
 
+    # When warm-starting from a previous run, carry over the PID controllers'
+    # accumulated state so the self-loss weighting resumes where it left off
+    # instead of re-converging from zero. Only the integral/error state is
+    # restored: the gains and setpoint stay under the control of THIS config,
+    # so changing PID_P or lambda_self in a fine-tuning config still takes
+    # effect. Model weights are restored separately, in main().
+    _ckpt_dir, _ckpt_kind = resolve_pretrained(config)
+    if _ckpt_dir is not None and _ckpt_kind == 'gan':
+        import pickle
+        _state_keys = ('_integral', '_last_error', '_last_output')
+        for _name, _pid in (('PID_G.pkl', pid_G), ('PID_F.pkl', pid_F)):
+            _path = os.path.join(_ckpt_dir, _name)
+            try:
+                with open(_path, 'rb') as _fh:
+                    _state = pickle.load(_fh)
+                _restored = {k: _state[k] for k in _state_keys if k in _state}
+                _pid.__dict__.update(_restored)
+                print(f"Restored PID state from {_path}: {_restored}")
+            except FileNotFoundError:
+                print(f"No PID state at {_path}; starting the controller fresh")
+            except Exception as _exc:  # noqa: BLE001 - never block training on this
+                print(f"Could not restore PID state from {_path} ({_exc}); "
+                      "starting the controller fresh")
+
     ############################################################################################################
 
     ############################################## Training loop ###############################################
@@ -406,8 +486,17 @@ def train(config, model, data, time, classifyer, strategy=None):
     def distributed_validate_step(batch):
         strategy.run(model.validate_step, args=(batch,))
 
-    # Steps per epoch based on configured global batch size.
-    steps_per_epoch = max(1, int(1e6 / global_batch_size))
+    # Steps per epoch. The default treats an "epoch" as a fixed budget of 1e6
+    # sequences regardless of how large the dataset actually is, which suits the
+    # large pretraining corpora but is wildly oversized for a small fine-tuning
+    # set: on a few thousand sequences it cycles the data hundreds of times per
+    # epoch. Set CycleGan.steps_per_epoch in the config to size it to the data.
+    steps_per_epoch = config['CycleGan'].get('steps_per_epoch', None)
+    if steps_per_epoch in (None, '', 'none', 'auto'):
+        steps_per_epoch = max(1, int(1e6 / global_batch_size))
+    else:
+        steps_per_epoch = max(1, int(steps_per_epoch))
+    print(f"Steps per epoch: {steps_per_epoch} (global batch {global_batch_size})")
     log_interval = max(1, int(1024 / global_batch_size))
 
     train_iter = iter(train_dist_ds)
@@ -582,24 +671,19 @@ def main():
 
         print("Compiled ThermalGAN")
 
-        # Optional fine-tuning: start from the weights of a previous run instead
-        # of from scratch. Driven by config['CycleGan']['saved'], which points at
-        # a previous results directory. Leave it unset, empty or "none" to train
-        # from scratch, which is the default.
-        saved = config['CycleGan'].get('saved', '')
-        if saved not in (None, '', 'none', 'None'):
-            saved_epoch = config['CycleGan'].get('saved_epoch', None)
-            if saved_epoch in (None, '', 'none', 'None'):
-                # End-of-run checkpoint written by model.save_weights() below.
-                checkpoint = os.path.join(saved, 'weights', 'cycle_gan_model_final')
-                model.load_weights(checkpoint)
-            else:
-                # Per-epoch weights written by model.save_gan() during training.
-                # pid_G/pid_F are unused by load_gan, so None is safe here: the
-                # PID controllers are created later, inside train().
-                checkpoint = os.path.join(saved, 'weights', f"epoch_{saved_epoch}")
+        # Optional fine-tuning: start from a previous run's weights instead of
+        # from scratch. See resolve_pretrained() for the config keys. Leaving
+        # CycleGan.saved unset, empty or "none" trains from scratch, which is
+        # the default. The PID controller state is restored separately, in
+        # train(), where the controllers are created.
+        checkpoint, kind = resolve_pretrained(config)
+        if checkpoint is not None:
+            if kind == 'gan':
+                # pid_G/pid_F are unused by load_gan, so None is safe here.
                 model.load_gan(checkpoint, None, None)
-            print(f"Fine-tuning: loaded ThermalGAN weights from {checkpoint}")
+            else:
+                model.load_weights(checkpoint)
+            print(f"Fine-tuning: loaded ThermalGAN weights from {checkpoint} ({kind})")
 
     # Initiate Training
 

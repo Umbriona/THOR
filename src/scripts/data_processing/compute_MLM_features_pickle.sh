@@ -32,14 +32,18 @@ IMAGE=${THOR_IMAGE}
 SCRIPT=compute_MLM_features.py
 DIR_FEATURE=${THOR_ROOT}/data/features_mlm/IMG_test #non_redundant_v2
 
-CHECKPOINT=${THOR_ROOT}/weights/esm1v_mlm_ur90_finetune/checkpoint-119432
+# ESM model used to compute per-position likelihoods. Stock ESM-1v is what the
+# published results use: fine-tuning ESM on the training corpus was tried (see
+# finetune_ESM.py) and made no appreciable difference. Override to point at a
+# local directory if you want to avoid re-downloading the weights.
+ESM_MODEL=${ESM_MODEL:-facebook/esm1v_t33_650M_UR90S_1}
 
 
 singularity exec --nv  ${IMAGE} python3 \
  ${SCRIPT} \
  -i ${FILE_FASTA} \
  -o ${DIR_FEATURE} \
- --model ${CHECKPOINT} \
+ --model ${ESM_MODEL} \
  --mode single \
  --quantize uint8 \
  --max_entries 10000 \

@@ -48,11 +48,16 @@ logs/
 *.out
 *.err
 
-# Project data (keep explicit docs)
-data/
+# Project data (keep explicit docs and the shipped example)
+# NOTE: 'data/*' rather than 'data/': git cannot re-include anything inside an
+# excluded *directory*, so 'data/' would make every !data/... rule below dead.
+data/*
 results/
-!data/**/README.md
+!data/README.md
+!data/example_MDH/
 !data/**/.gitkeep
+# ...but not the TFRecords prepare_example.sh generates inside it.
+data/example_MDH/records/
 
 # Large numeric/data formats outside data/
 *.h5
@@ -65,6 +70,14 @@ results/
 *.parquet
 *.jsonl
 *.pkl
+
+# TFRecords, wherever they land. '*.tfrecord' does not match
+# '*.tfrecord.gz' - gitignore globs match the whole filename - so both
+# patterns are needed, plus the sharded/plural spellings.
+*.tfrecord
+*.tfrecord.gz
+*.tfrecords
+*.tfrecords.gz
 
 # SLURM and profiling outputs
 *.prof

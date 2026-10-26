@@ -23,7 +23,7 @@ predicted temperature), and optionally a JSONL of softmax distributions.
 |---|---|
 | `--run_dir` | **required.** Trained run directory, containing `config.yaml` and `weights/epoch_<n>/` |
 | `--fasta` *or* `--sequence` | input sequences, or a single raw sequence |
-| `--weights` | path of the weights directory *relative to `--run_dir`*, e.g. `weights/epoch_39`. The generator is loaded from `<run_dir>/<weights>/generator_G.h5` |
+| `--weights` | weights directory *relative to `--run_dir`* — `weights_85` for a downloaded model, or `weights/epoch_39` for one of your own runs. The generator is loaded from `<run_dir>/<weights>/generator_G.h5` |
 | `--replicates` | variants per input sequence (default 1) |
 | `--temperature` | sampling temperature (default 1.0) |
 | `--esm_filter_threshold` | drop variants whose ESM NLL exceeds this |
@@ -86,14 +86,27 @@ directory in the config:
 
 ```yaml
 CycleGan:
-    saved: "/path/to/results/20251218-225521config_67.yaml"
-    # saved_epoch: 39
+    saved: "/data/pretrained"      # the downloaded Hugging Face repo
+    saved_weights: "weights_85"    # published models: 70, 75, 80, 85, 90, 95
+    lambda_self: 0.85              # must match: weights_NN <-> 0.NN
 ```
 
-With `saved_epoch` set, the per-epoch weights in `<saved>/weights/epoch_<n>/`
-are loaded (the four `.h5` files for G, F and both discriminators). Without it,
-the end-of-run checkpoint `<saved>/weights/cycle_gan_model_final` is used.
-Set `saved` to `"none"` or leave it out to train from scratch.
+The six published models share one architecture and differ only in
+`lambda_self`, the PID setpoint that holds generated variants near the target
+sequence identity. Loading one while leaving `lambda_self` at another value
+pulls the model away from what it was trained for.
+
+`saved_weights` names a directory inside `saved` holding the four `.h5` files
+for G, F and both discriminators, plus optional `PID_G.pkl` / `PID_F.pkl`.
+
+For continuing one of your own runs, `saved_epoch: 39` is shorthand for
+`saved_weights: "weights/epoch_39"`, matching the layout training writes. With
+`saved` set but neither key, the end-of-run checkpoint
+`<saved>/weights/cycle_gan_model_final` is used instead. Set `saved` to
+`"none"` or leave it out to train from scratch.
+
+Fine-tuning restores weights and PID controller state; optimizers start fresh,
+so give the run a learning-rate warmup.
 
 Point `Data_meso` / `Data_thermo` at the family's records, and everything else
 proceeds as a normal training run.
@@ -111,9 +124,15 @@ copies form the ensemble.
 
 Wrapper: `train_et_regressor.sh`.
 
-### `scripts/finetune_ESM.py` — fine-tune ESM-1v
-Masked-LM fine-tuning of ESM-1v on your sequences, so the likelihoods guiding
-generation reflect the target family. Multi-GPU via `torchrun` (DDP).
+### `scripts/finetune_ESM.py` — fine-tune ESM-1v (exploratory)
+Masked-LM fine-tuning of ESM-1v on your own sequences, so the likelihoods
+guiding generation reflect the target family. Multi-GPU via `torchrun` (DDP).
+
+> **Not used for the published results.** This was tried and made no
+> appreciable difference, so THOR uses stock `facebook/esm1v_t33_650M_UR90S_1`
+> throughout. The script is kept because the experiment is part of the record,
+> and because fine-tuning may help on families further from ESM's training
+> distribution. Nothing else in the pipeline depends on it.
 
 | Argument | |
 |---|---|
@@ -159,7 +178,7 @@ record-building stage.
 | `-i/--input` | **required.** FASTA (temperature may be the last header token) |
 | `-o/--output` | **required.** output directory |
 | `--format` | `tfrecord` (default, gzip) or `pickle` |
-| `--model` | ESM checkpoint — a HF id, or a fine-tuned checkpoint directory |
+| `--model` | ESM model: a HF id (default `facebook/esm1v_t33_650M_UR90S_1`, as used for the published results) or a local directory |
 | `--mode` | `single` or random-partition masking |
 | `--quantize` | `none` / `uint8` |
 | `--max_entries` | records per shard |
