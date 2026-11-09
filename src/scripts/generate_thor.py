@@ -288,8 +288,8 @@ def write_outputs(out_dir: Path, records: List[Dict], store_softmax: bool,
                   name_prefix: Optional[str] = None):
     out_dir.mkdir(parents=True, exist_ok=True)
     prefix = f"{name_prefix}_" if name_prefix else ""
-    fasta_path = out_dir / f"{prefix}_variants.fasta"
-    kind_order = {"wt": 0, "sampled": 1, "filtered": 2, "optimized": 3}
+    fasta_path = out_dir / f"{prefix}variants.fasta"
+    kind_order = {"wt": 0, "sampled": 1, "argmax": 2, "resampled": 3, "filtered": 4, "optimized": 5}
     def rep_sort_value(rep):
         if isinstance(rep, int):
             return (0, rep)
@@ -330,7 +330,7 @@ def write_outputs(out_dir: Path, records: List[Dict], store_softmax: bool,
 
     probs_path = None
     if store_softmax and base_softmax is not None and mask_np is not None:
-        probs_path = out_dir / f"{prefix}variants_epoch_{epoch}_softmax.jsonl"
+        probs_path = out_dir / f"{prefix}variants_softmax.jsonl"
         with open(probs_path, "w") as pf:
             for rid, prob, mask_row in zip(fasta_ids, base_softmax, mask_np):
                 length = int(np.sum(mask_row))
@@ -504,24 +504,23 @@ def main():
 
     records: List[Dict] = []
 
-    # Wildtype records (per replicate to mirror existing behavior)
-    for rep_idx in range(args.replicates):
-        for i, rid in enumerate(fasta_ids):
-            g_global, g_sub = compute_generator_nll(seq_ids_np[i], log_probs_np[i], mask_np[i])
-            esm_global, esm_sub = compute_esm_nll(wt_seqs[i], wt_results[rid]["probs"])
-            records.append({
-                "label": f"{rid}_wt_rep{rep_idx}",
-                "base_id": rid,
-                "rep": rep_idx,
-                "kind": "wt",
-                "seq": wt_seqs[i],
-                "temp": temps[i],
-                "g_global_nll": g_global,
-                "g_sub_nll": g_sub,
-                "esm_global_nll": esm_global,
-                "esm_sub_nll": esm_sub,
-                "identity_to_wt": None,
-            })
+    # Wildtype records (one per input sequence; the WT does not depend on the replicate)
+    for i, rid in enumerate(fasta_ids):
+        g_global, g_sub = compute_generator_nll(seq_ids_np[i], log_probs_np[i], mask_np[i])
+        esm_global, esm_sub = compute_esm_nll(wt_seqs[i], wt_results[rid]["probs"])
+        records.append({
+            "label": f"{rid}_wt",
+            "base_id": rid,
+            "rep": "wt",
+            "kind": "wt",
+            "seq": wt_seqs[i],
+            "temp": temps[i],
+            "g_global_nll": g_global,
+            "g_sub_nll": g_sub,
+            "esm_global_nll": esm_global,
+            "esm_sub_nll": esm_sub,
+            "identity_to_wt": 100.0,
+        })
 
     # Sampled variants
     print("[info] Sampling variants...")
@@ -552,7 +551,7 @@ def main():
             "label": f"{rid}_variant_rep_max",
             "base_id": rid,
             "rep": "max",
-            "kind": "sampled",
+            "kind": "argmax",
             "seq": variant_argmax_seqs[i],
             "temp": temps[i],
             "g_global_nll": g_global,
@@ -645,7 +644,7 @@ def main():
                         "label": sample_label,
                         "base_id": filt_rec["base_id"],
                         "rep": sample_rep,
-                        "kind": "sampled",
+                        "kind": "resampled",
                         "seq": sample_seqs[i],
                         "temp": filt_rec["temp"],
                         "filter_threshold": args.esm_filter_threshold,
@@ -777,7 +776,12 @@ def main():
     # Final safety filter after last optimization cycle
     if args.esm_filter_threshold is not None:
         final_targets = opt_final if opt_final else filtered_final
-        if not final_targets:
+        # When no filter/optimize cycle ran, the final filter is applied directly to the
+        # sampled variants. Those records are already in `records` under kind "sampled"/
+        # "resampled", so the filtered copies need a distinct kind and label - otherwise
+        # they are written to the FASTA as duplicates of the sequences they replace.
+        relabel_as_filtered = not final_targets
+        if relabel_as_filtered:
             final_targets = sampling_final if sampling_final else current_records
         if final_targets:
             print("[info] Applying final post-optimization filtering...")
@@ -793,7 +797,11 @@ def main():
                 new_rec = dict(rec)
                 new_rec["seq"] = filt_seq
                 new_rec["reverted_positions"] = reverted
+                new_rec["filter_threshold"] = args.esm_filter_threshold
                 new_rec["identity_to_wt"] = compute_identity(filt_seq, wt_seq)
+                if relabel_as_filtered:
+                    new_rec["kind"] = "filtered"
+                    new_rec["label"] = f"{rec['label']}_filtered"
                 final_filtered_records.append(new_rec)
 
             # Recompute ESM on filtered seqs
