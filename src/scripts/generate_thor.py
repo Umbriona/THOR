@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import gc
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -45,6 +46,15 @@ from data_processing.compute_MLM_features import (  # noqa: E501
     load_fasta_with_meta,
     to_protbert,
 )
+from data_processing.compute_mpnn_features import (  # noqa: E501
+    blend_probs,
+    compute_structure_probs,
+    extract_chain,
+    list_chains,
+    locate_proteinmpnn,
+    numbering_gaps,
+    score_sequences,
+)
 
 
 MAX_LEN = 512
@@ -58,7 +68,7 @@ OGT_AA_TO_IDX = {aa: i for i, aa in enumerate(OGT_ALPHABET)}
 def parse_args():
     parser = argparse.ArgumentParser("Generate ThermalGAN variants from FASTA or single sequence (ESM inline)")
     parser.add_argument("--run_dir", required=True, help="Run directory holding config.yaml and weights/")
-    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group = parser.add_mutually_exclusive_group(required=False)
     input_group.add_argument("--fasta", help="Input FASTA with optional temp in header")
     input_group.add_argument("--sequence", help="Input single protein sequence (string)")
     parser.add_argument("--seq_id", default="query", help="Identifier for --sequence input")
@@ -98,6 +108,21 @@ def parse_args():
     parser.add_argument("--ogt_batch_size", type=int, default=128, help="Batch size for OGT prediction")
     parser.add_argument("--ogt_max_len", type=int, default=512, help="Max length for OGT predictor padding")
     parser.add_argument("--skip_ogt", action="store_true", help="Disable OGT prediction step")
+    parser.add_argument("--structure", default=None,
+                        help="PDB file of the input protein; adds ProteinMPNN features and scores")
+    parser.add_argument("--mpnn_chain", default=None,
+                        help="Chain to use from --structure (default: first chain with CA atoms)")
+    parser.add_argument("--mpnn_dir", default="ProteinMPNN",
+                        help="Path to a ProteinMPNN checkout (git clone https://github.com/dauparas/ProteinMPNN)")
+    parser.add_argument("--mpnn_weight", type=float, default=0.0,
+                        help="Blend weight for ProteinMPNN features: 0 = ESM only (as trained), 1 = ProteinMPNN only")
+    parser.add_argument("--mpnn_model", default="v_48_020", help="ProteinMPNN checkpoint name")
+    parser.add_argument("--mpnn_soluble", action="store_true", help="Use the soluble-protein ProteinMPNN weights")
+    parser.add_argument("--mpnn_backbone_noise", type=float, default=0.0,
+                        help="Gaussian noise (A) added to backbone atoms before featurization")
+    parser.add_argument("--mpnn_seed", type=int, default=37, help="Seed for ProteinMPNN")
+    parser.add_argument("--skip_mpnn_score", action="store_true",
+                        help="Compute ProteinMPNN features but skip per-variant ProteinMPNN scoring")
     parser.add_argument("--filter_opt_cycles", type=int, default=1,
                         help="Number of filter+optimize cycles to run (>=0). Only the last cycle's optimized outputs are kept.")
     parser.add_argument("--sampling_cycles", type=int, default=0,
@@ -111,15 +136,74 @@ def load_config(run_dir: Path) -> Dict:
         return yaml.load(fh, Loader=yaml.FullLoader)
 
 
-def load_input_sequences(args) -> Tuple[List[str], List[str], List[Optional[float]]]:
+def resolve_structure(args) -> Tuple[Optional[str], Optional[str]]:
+    """Pick the chain to work on and read its sequence. Returns (chain_id, sequence)."""
+    if not args.structure:
+        return None, None
+    if not Path(args.structure).exists():
+        raise FileNotFoundError(f"Structure not found: {args.structure}")
+    # Fail before the ESM model load rather than after it.
+    locate_proteinmpnn(args.mpnn_dir)
+
+    chains = list_chains(args.structure)
+    if not chains:
+        raise ValueError(f"No chains with CA atoms in {args.structure}")
+    chain_id = args.mpnn_chain or chains[0]
+    if chain_id not in chains:
+        raise ValueError(f"Chain {chain_id!r} not in {args.structure}; found {chains}")
+    if args.mpnn_chain is None and len(chains) > 1:
+        print(f"[warn] {args.structure} has chains {chains}; using {chain_id}. "
+              f"Set --mpnn_chain to choose another.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        struct_seq, resnums = extract_chain(args.structure, chain_id, Path(tmp) / "chain.pdb")
+
+    gaps = numbering_gaps(resnums)
+    if gaps:
+        print(f"[warn] Chain {chain_id} has {len(gaps)} break(s) in residue numbering "
+              f"(first: {gaps[0][0]}->{gaps[0][1]}). Unresolved residues are absent from the "
+              f"model, so positions here are numbered over the resolved residues only.")
+    unknown = struct_seq.count("X")
+    if unknown:
+        print(f"[warn] {unknown} residue(s) in chain {chain_id} are non-standard and read as X. "
+              f"They are outside the 20-letter alphabet the generator and ESM use, so those "
+              f"positions are unreliable.")
+    print(f"[info] Structure chain {chain_id}: {len(struct_seq)} resolved residues")
+    return chain_id, struct_seq
+
+
+def load_input_sequences(args, struct_seq: Optional[str] = None) -> Tuple[List[str], List[str], List[Optional[float]]]:
     if args.sequence:
         seq = clean_seq(args.sequence)
         if args.hf_model.split("/")[-1] in ["prot_bert", "prot_bert_bfd"]:
             seq = to_protbert(seq)
         if not seq:
             raise ValueError("Provided --sequence is empty after cleaning.")
+        if struct_seq is not None and seq.replace(" ", "") != struct_seq:
+            raise ValueError(
+                "--sequence does not match the structure chain, so structure features would be "
+                "assigned to the wrong positions.\n"
+                f"  sequence : {len(seq.replace(' ', ''))} aa\n"
+                f"  structure: {len(struct_seq)} aa\n"
+                f"  {_first_difference(seq.replace(' ', ''), struct_seq)}\n"
+                "Omit --sequence to use the structure's own sequence."
+            )
         return [args.seq_id], [seq], [args.seq_temp]
-    return load_fasta_with_meta(args.fasta, default_temp=None, args=args)
+    if args.fasta:
+        if struct_seq is not None:
+            raise ValueError("--structure works with --sequence or on its own, not with --fasta.")
+        return load_fasta_with_meta(args.fasta, default_temp=None, args=args)
+    if struct_seq is not None:
+        print("[info] Taking the input sequence from the structure.")
+        return [args.seq_id], [struct_seq], [args.seq_temp]
+    raise ValueError("Provide one of --sequence, --fasta or --structure.")
+
+
+def _first_difference(a: str, b: str) -> str:
+    for i, (x, y) in enumerate(zip(a, b)):
+        if x != y:
+            return f"first mismatch at position {i+1}: {x} vs {y}"
+    return "one is a prefix of the other"
 
 
 def quantize_and_pad_probs(probs: np.ndarray) -> np.ndarray:
@@ -143,6 +227,25 @@ def encode_sequences(ids: List[str], seqs: List[str], probs: Dict[str, Dict]) ->
         temp_val = probs[rid].get("temp", None)
         temps.append(float(temp_val) if temp_val is not None else float("nan"))
     return np.stack(seq_id_tensors, axis=0), np.stack(prob_tensors, axis=0), ids, temps
+
+
+def generator_features(results: Dict[str, Dict], mpnn_probs: Optional[np.ndarray],
+                       weight: float) -> Dict[str, Dict]:
+    """Blend structure features into a copy of the ESM results, for generator input only.
+
+    The originals are left alone: ESM metrics and the ESM filter keep their own
+    meaning, and only what the generator sees carries the structure signal.
+    """
+    if mpnn_probs is None or weight <= 0.0:
+        return results
+    blended = {}
+    for rid, entry in results.items():
+        new_entry = dict(entry)
+        new_entry["probs"] = blend_probs(
+            np.asarray(entry["probs"], dtype=np.float32), mpnn_probs, weight
+        )
+        blended[rid] = new_entry
+    return blended
 
 
 def build_generator(config: Dict) -> Tuple[tf.keras.Model, bool]:
@@ -319,6 +422,8 @@ def write_outputs(out_dir: Path, records: List[Dict], store_softmax: bool,
                 f"ESM_sub_nll={format_metric(rec.get('esm_sub_nll'))}",
                 f"Identity_to_WT(%)={format_metric(rec.get('identity_to_wt'))}",
             ]
+            if rec.get("mpnn_nll") is not None:
+                header_parts.append(f"MPNN_nll={format_metric(rec.get('mpnn_nll'))}")
             if rec.get("temp") is not None:
                 header_parts.append(f"temp={format_metric(rec['temp'])}")
             if rec.get("filter_threshold") is not None:
@@ -459,6 +564,9 @@ def main():
     print(f"Output dir set to: {output_dir}")
     config = load_config(run_dir)
     print(f"Loading config from : {run_dir}")
+
+    chain_id, struct_seq = resolve_structure(args)
+
     # ESM scoring
     # Ensure compatibility with load_fasta_with_meta (expects args.model).
     args.model = args.hf_model
@@ -471,8 +579,24 @@ def main():
     model = model.to(device)
     print(f"[info] ESM model on device: {device}")
 
-    fasta_ids, seqs, temps = load_input_sequences(args)
+    fasta_ids, seqs, temps = load_input_sequences(args, struct_seq)
     wt_seq_map = {rid: seq for rid, seq in zip(fasta_ids, seqs)}
+
+    # Structure features, computed once: they depend on the backbone, not on the
+    # sequence threaded through it, so the wildtype and every variant share them.
+    mpnn_probs = None
+    if args.structure and args.mpnn_weight > 0.0:
+        print(f"[info] Computing ProteinMPNN features from {args.structure} chain {chain_id} "
+              f"(blend weight {args.mpnn_weight})...")
+        mpnn_probs, _ = compute_structure_probs(
+            args.structure, chain_id, args.mpnn_dir,
+            model_name=args.mpnn_model,
+            use_soluble_model=args.mpnn_soluble,
+            backbone_noise=args.mpnn_backbone_noise,
+            seed=args.mpnn_seed,
+        )
+    elif args.structure:
+        print("[info] --mpnn_weight is 0, so generator features stay pure ESM.")
     # ESM for generator features (single-mask or random-partition) and for metrics
     if args.esm_init_mode == "random":
         print(f"[info] Computing ESM random-partition features for generator (mask_prob={args.esm_random_mask_prob})...")
@@ -485,7 +609,8 @@ def main():
         feature_results = wt_results
     print("[info] ESM probabilities computed for wildtypes.")
 
-    seq_ids_np, prob_q_np, fasta_ids, temps = encode_sequences(fasta_ids, seqs, feature_results)
+    seq_ids_np, prob_q_np, fasta_ids, temps = encode_sequences(
+        fasta_ids, seqs, generator_features(feature_results, mpnn_probs, args.mpnn_weight))
 
     # Build generator and load weights
     generator, concat_modalities = build_generator(config)
@@ -617,7 +742,9 @@ def main():
                 rec["esm_global_nll"] = esm_global
                 rec["esm_sub_nll"] = esm_sub
 
-            filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(filtered_ids, filtered_seqs, filtered_results)
+            filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(
+                filtered_ids, filtered_seqs,
+                generator_features(filtered_results, mpnn_probs, args.mpnn_weight))
             f_gen_inp, f_mask = prepare_generator_inputs(filt_seq_ids_np, filt_prob_q_np, concat_modalities)
             f_log_probs_tf, _ = run_generator(generator, f_gen_inp, f_mask, args.temperature)
             f_log_probs_np = f_log_probs_tf.numpy()
@@ -714,7 +841,9 @@ def main():
                 rec["esm_global_nll"] = esm_global
                 rec["esm_sub_nll"] = esm_sub
 
-            filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(filtered_ids, filtered_seqs, filtered_results)
+            filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(
+                filtered_ids, filtered_seqs,
+                generator_features(filtered_results, mpnn_probs, args.mpnn_weight))
             f_gen_inp, f_mask = prepare_generator_inputs(filt_seq_ids_np, filt_prob_q_np, concat_modalities)
             f_log_probs_tf, _ = run_generator(generator, f_gen_inp, f_mask, args.temperature)
             f_log_probs_np = f_log_probs_tf.numpy()
@@ -810,7 +939,8 @@ def main():
             # Generator metrics on filtered seqs
             ff_ids = [r["label"] for r in final_filtered_records]
             ff_seqs = [r["seq"] for r in final_filtered_records]
-            ff_seq_ids_np, ff_prob_q_np, _, _ = encode_sequences(ff_ids, ff_seqs, ff_results)
+            ff_seq_ids_np, ff_prob_q_np, _, _ = encode_sequences(
+                ff_ids, ff_seqs, generator_features(ff_results, mpnn_probs, args.mpnn_weight))
             ff_gen_inp, ff_mask = prepare_generator_inputs(ff_seq_ids_np, ff_prob_q_np, concat_modalities)
             ff_log_probs_tf, _ = run_generator(generator, ff_gen_inp, ff_mask, args.temperature)
             ff_log_probs_np = ff_log_probs_tf.numpy()
@@ -845,6 +975,22 @@ def main():
     del tokenizer  # if you want
     gc.collect()
     torch.cuda.empty_cache()
+
+    # ProteinMPNN score: how well each sequence fits the backbone (lower is better).
+    # A failure here must not cost the whole run, so it is reported and skipped.
+    if args.structure and not args.skip_mpnn_score:
+        print("[info] Scoring sequences with ProteinMPNN...")
+        try:
+            mpnn_scores = score_sequences(
+                args.structure, chain_id, [rec["seq"] for rec in records], args.mpnn_dir,
+                model_name=args.mpnn_model,
+                use_soluble_model=args.mpnn_soluble,
+                seed=args.mpnn_seed,
+            )
+            for rec, val in zip(records, mpnn_scores):
+                rec["mpnn_nll"] = val
+        except Exception as exc:
+            print(f"[warn] ProteinMPNN scoring failed, continuing without it: {exc}")
 
     # OGT prediction
     if args.skip_ogt:

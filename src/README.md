@@ -34,6 +34,42 @@ predicted temperature), and optionally a JSONL of softmax distributions.
 
 Wrapper: `generate_thor.sh`. Notebook: `generate_thor_colab.ipynb`.
 
+#### Structure input (optional, ProteinMPNN)
+
+Given a backbone, ProteinMPNN can contribute structure-derived features and a
+per-variant score. Clone it first — it is not a pip package, and its weights
+ship with the checkout:
+
+```
+git clone https://github.com/dauparas/ProteinMPNN
+```
+
+| Argument | |
+|---|---|
+| `--structure` | PDB file. Use with `--sequence`, or alone to take the sequence from the chain |
+| `--mpnn_chain` | chain to use (default: the first chain with CA atoms) |
+| `--mpnn_dir` | path to the ProteinMPNN checkout (default `ProteinMPNN`) |
+| `--mpnn_weight` | blend weight for generator features: `0` = ESM only, `1` = ProteinMPNN only |
+| `--skip_mpnn_score` | compute features but skip per-variant scoring |
+| `--mpnn_model`, `--mpnn_soluble`, `--mpnn_backbone_noise`, `--mpnn_seed` | |
+
+The features are *unconditional* ProteinMPNN probabilities — they depend on the
+backbone, not on the sequence threaded through it — so they are computed once
+and reused for the wildtype and every variant. `--mpnn_weight` mixes them with
+the ESM features as `(1-w)*ESM + w*MPNN`.
+
+> **`--mpnn_weight > 0` is experimental.** The generator was trained on ESM-1v
+> masked marginals; blending in ProteinMPNN feeds it a distribution it never saw
+> in training. Compare against `--mpnn_weight 0` before trusting the output.
+
+Only the ESM features are blended. ESM metrics and the `--esm_filter_threshold`
+filter keep their original meaning, and the ProteinMPNN score is reported
+separately as `MPNN_nll` in the FASTA header (lower = fits the fold better).
+
+Positions must line up with the structure, so a `--sequence` that disagrees with
+the chain is rejected rather than silently misaligned. Structures with unresolved
+residues are reported: positions then refer to the resolved residues only.
+
 ### `scripts/generate_thor_batch.py` — generate across a whole dataset
 Dataset-scale generation from **pre-built TFRecords**, used for the large-scale
 experiments. Loads the full CycleGAN (with PID controllers) rather than the
@@ -187,6 +223,18 @@ record-building stage.
 
 Wrappers: `compute_MLM_features_tfrecord.sh` (SLURM array, the production run)
 and `compute_MLM_features_pickle.sh` (same script, `--format pickle`).
+
+### `compute_mpnn_features.py` — structure features and scores
+A library, not a CLI: helpers that `generate_thor.py` uses when `--structure` is
+given. Extracts a single chain from a PDB, runs ProteinMPNN for per-position
+backbone probabilities in the same `(L, 20)` AA20 layout the generator expects,
+scores sequences against the backbone, and blends structure with ESM features.
+
+ProteinMPNN's alphabet is `ACDEFGHIKLMNPQRSTVWYX`, so its first 20 columns are
+already in AA20 order. As with the ESM features, the non-amino-acid column is
+dropped without renormalising, so rows sum to slightly under 1.
+
+Needs a ProteinMPNN checkout: `git clone https://github.com/dauparas/ProteinMPNN`.
 
 ### Record handling
 | Script | Purpose |
