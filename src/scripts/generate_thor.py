@@ -260,7 +260,10 @@ def build_generator(config: Dict) -> Tuple[tf.keras.Model, bool]:
 
 def prepare_generator_inputs(seq_ids: np.ndarray, prob_q: np.ndarray, concat_modalities: bool) -> Tuple[tf.Tensor, tf.Tensor]:
     mask = tf.cast(seq_ids >= 0, tf.float32)[..., tf.newaxis]
-    real_x = tf.one_hot(tf.where(seq_ids < 0, 0, seq_ids), depth=21, dtype=tf.float32)
+    # Padding is -1, and tf.one_hot leaves out-of-range indices as all-zero rows.
+    # Mapping it to 0 first would feed the generator a one-hot alanine at every
+    # padded position, which is not what training puts there.
+    real_x = tf.one_hot(seq_ids, depth=21, dtype=tf.float32)
     prob = tf.convert_to_tensor(prob_q, dtype=tf.float32) / 255.0
     if concat_modalities:
         gen_inp = tf.concat([real_x, prob], axis=-1)
