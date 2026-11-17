@@ -28,7 +28,8 @@ predicted temperature), and optionally a JSONL of softmax distributions.
 | `--temperature` | sampling temperature (default 1.0) |
 | `--esm_filter_threshold` | drop variants whose ESM NLL exceeds this |
 | `--filter_opt_cycles` | rounds of ESM-guided argmax optimisation |
-| `--store_softmax` | also write per-position probabilities as JSONL |
+| `--store_softmax` | also write the generator's per-position probabilities as JSONL |
+| `--store_scoring_probs` | also write the scoring models' per-position probabilities as JSONL: the ESM distribution behind each emitted sequence's metrics, plus the ProteinMPNN backbone distribution when `--structure` is given. Columns are in AA20 order |
 | `--skip_ogt` | skip temperature prediction |
 | `--output_dir`, `--name`, `--gpu`, `--device`, `--batch_tokens` | |
 

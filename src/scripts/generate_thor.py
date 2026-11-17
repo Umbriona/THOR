@@ -79,6 +79,8 @@ def parse_args():
     parser.add_argument("--replicates", type=int, default=1, help="Number of variants per input sequence")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature for generator logits")
     parser.add_argument("--store_softmax", action="store_true", help="Also emit per-position softmax to JSONL")
+    parser.add_argument("--store_scoring_probs", action="store_true",
+                        help="Also emit the per-position ESM (and ProteinMPNN) probabilities used for scoring")
     parser.add_argument("--hf_model", default="facebook/esm1v_t33_650M_UR90S_1", help="HuggingFace ESM model id/path")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Torch device for ESM scoring")
     parser.add_argument("--batch_tokens", type=int, default=40000, help="Token budget for ESM single-mask mode")
@@ -389,6 +391,45 @@ def compute_identity(seq: str, wt_seq: str) -> Optional[float]:
     return 100.0 * matches / len(wt_seq)
 
 
+def write_scoring_probs(out_dir: Path, records: List[Dict], mpnn_probs: Optional[np.ndarray],
+                        chain_id: Optional[str], name_prefix: Optional[str] = None) -> Path:
+    """Write the per-position probabilities the scoring models produced, as JSONL.
+
+    One line per emitted sequence holding the ESM distribution that its metrics
+    and the ESM filter were computed from, plus one line for the ProteinMPNN
+    backbone distribution, which is shared by every variant. Columns are in
+    AA20 order.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{name_prefix}_" if name_prefix else ""
+    path = out_dir / f"{prefix}scoring_probs.jsonl"
+
+    def trim(probs, length):
+        return [[round(float(v), 6) for v in row] for row in np.asarray(probs)[:length]]
+
+    with open(path, "w") as fh:
+        if mpnn_probs is not None:
+            fh.write(json.dumps({
+                "model": "proteinmpnn",
+                "label": f"structure_chain_{chain_id}",
+                "aa_order": AA_ORDER,
+                "probs": trim(mpnn_probs, len(mpnn_probs)),
+            }) + "\n")
+        for rec in records:
+            probs = rec.get("esm_probs")
+            if probs is None:
+                continue
+            fh.write(json.dumps({
+                "model": "esm",
+                "label": rec["label"],
+                "kind": rec.get("kind"),
+                "aa_order": AA_ORDER,
+                "probs": trim(probs, len(rec["seq"])),
+            }) + "\n")
+    print(f"Wrote scoring probabilities to {path}")
+    return path
+
+
 def write_outputs(out_dir: Path, records: List[Dict], store_softmax: bool,
                   base_softmax: Optional[np.ndarray], mask_np: Optional[np.ndarray], fasta_ids: List[str],
                   name_prefix: Optional[str] = None):
@@ -647,6 +688,7 @@ def main():
             "g_sub_nll": g_sub,
             "esm_global_nll": esm_global,
             "esm_sub_nll": esm_sub,
+            "esm_probs": wt_results[rid]["probs"],
             "identity_to_wt": 100.0,
         })
 
@@ -694,6 +736,7 @@ def main():
         res = variant_results[rec["label"]]
         esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
         rec["esm_global_nll"] = esm_global
+        rec["esm_probs"] = res["probs"]
         rec["esm_sub_nll"] = esm_sub
         rec["identity_to_wt"] = compute_identity(rec["seq"], wt_seq_map[rec["base_id"]])
 
@@ -743,6 +786,7 @@ def main():
                 res = filtered_results[rec["label"]]
                 esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
                 rec["esm_global_nll"] = esm_global
+                rec["esm_probs"] = res["probs"]
                 rec["esm_sub_nll"] = esm_sub
 
             filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(
@@ -789,6 +833,7 @@ def main():
                     res = sampled_results[rec["label"]]
                     esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
                     rec["esm_global_nll"] = esm_global
+                    rec["esm_probs"] = res["probs"]
                     rec["esm_sub_nll"] = esm_sub
 
             records.extend(filtered_records)
@@ -842,6 +887,7 @@ def main():
                 res = filtered_results[rec["label"]]
                 esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
                 rec["esm_global_nll"] = esm_global
+                rec["esm_probs"] = res["probs"]
                 rec["esm_sub_nll"] = esm_sub
 
             filt_seq_ids_np, filt_prob_q_np, _, _ = encode_sequences(
@@ -888,6 +934,7 @@ def main():
                     res = opt_results[rec["label"]]
                     esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
                     rec["esm_global_nll"] = esm_global
+                    rec["esm_probs"] = res["probs"]
                     rec["esm_sub_nll"] = esm_sub
             else:
                 print("[info] Skipping optimization step (--skip_optimize set).")
@@ -957,6 +1004,7 @@ def main():
                 res = ff_results[rec["label"]]
                 esm_global, esm_sub = compute_esm_nll(rec["seq"], res["probs"], wt_seq_map[rec["base_id"]])
                 rec["esm_global_nll"] = esm_global
+                rec["esm_probs"] = res["probs"]
                 rec["esm_sub_nll"] = esm_sub
 
             # Replace final outputs with filtered versions
@@ -1005,6 +1053,8 @@ def main():
 
     # Write outputs (final)
     write_outputs(output_dir, records, args.store_softmax, base_softmax, mask_np, fasta_ids, args.name)
+    if args.store_scoring_probs:
+        write_scoring_probs(output_dir, records, mpnn_probs, chain_id, args.name)
 
 
 if __name__ == "__main__":
