@@ -47,7 +47,7 @@ git clone https://github.com/dauparas/ProteinMPNN
 
 | Argument | |
 |---|---|
-| `--structure` | PDB file. Use with `--sequence`, or alone to take the sequence from the chain |
+| `--structure` | PDB or mmCIF file (`.pdb`, `.cif`; AlphaFold and Boltz output included). Use with `--sequence`, or alone to take the sequence from the chain |
 | `--mpnn_chain` | chain to use (default: the first chain with CA atoms) |
 | `--mpnn_dir` | path to the ProteinMPNN checkout (default `ProteinMPNN`) |
 | `--mpnn_weight` | blend weight for generator features: `0` = ESM only, `1` = ProteinMPNN only |

@@ -3,7 +3,9 @@
 Structure-based per-position features and sequence scores from ProteinMPNN.
 
 The generator consumes an (L, 20) probability matrix in AA20 order, whichever
-model produced it. ProteinMPNN's alphabet is ACDEFGHIKLMNPQRSTVWYX, so its
+model produced it. Structures are read from PDB or mmCIF; ProteinMPNN's own
+reader only handles PDB, so the chain we hand it is always written back out as
+PDB first. ProteinMPNN's alphabet is ACDEFGHIKLMNPQRSTVWYX, so its
 first 20 columns are already in AA20 order and need no remapping.
 
 ProteinMPNN is not a pip package; clone it next to the run and point --mpnn_dir
@@ -15,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -42,15 +44,197 @@ def locate_proteinmpnn(mpnn_dir: str) -> Path:
     return root
 
 
+class Atom(NamedTuple):
+    """One atom record, from either input format."""
+    hetatm: bool
+    name: str
+    altloc: str
+    resname: str
+    chain: str
+    resseq: int
+    icode: str
+    x: float
+    y: float
+    z: float
+    occupancy: float
+    bfactor: float
+    element: str
+
+
+def _parse_pdb_atoms(structure_path: str) -> List[Atom]:
+    atoms: List[Atom] = []
+    with open(structure_path) as fh:
+        for line in fh:
+            if line.startswith("ENDMDL"):
+                break  # first model only
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            atoms.append(Atom(
+                hetatm=line.startswith("HETATM"),
+                name=line[12:16].strip(),
+                altloc=line[16].strip(),
+                resname=line[17:20].strip().upper(),
+                chain=line[21].strip() or "A",
+                resseq=int(line[22:26]),
+                icode=line[26].strip(),
+                x=float(line[30:38]), y=float(line[38:46]), z=float(line[46:54]),
+                occupancy=float(line[54:60] or 1.0),
+                bfactor=float(line[60:66] or 0.0),
+                element=line[76:78].strip() or line[12:16].strip()[:1],
+            ))
+    return atoms
+
+
+def _cif_tokens(line: str) -> List[str]:
+    """Split one mmCIF data line, honouring the quoting the format allows."""
+    tokens: List[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        if line[i].isspace():
+            i += 1
+            continue
+        if line[i] in "'\"":
+            quote = line[i]
+            j = i + 1
+            # A quote only closes a value when whitespace (or the end) follows it.
+            while j < n and not (line[j] == quote and (j + 1 == n or line[j + 1].isspace())):
+                j += 1
+            tokens.append(line[i + 1:j])
+            i = j + 2
+        else:
+            j = i
+            while j < n and not line[j].isspace():
+                j += 1
+            tokens.append(line[i:j])
+            i = j
+    return tokens
+
+
+def _parse_cif_atoms(structure_path: str) -> List[Atom]:
+    """Read the _atom_site loop of an mmCIF/PDBx file (AlphaFold, Boltz, RCSB).
+
+    Only the columns we need are required, and auth_* numbering is preferred so
+    chain IDs and residue numbers match what a PDB of the same model would show.
+    """
+    cols: Dict[str, int] = {}
+    rows: List[List[str]] = []
+    with open(structure_path) as fh:
+        in_header = False
+        in_loop = False
+        for line in fh:
+            stripped = line.strip()
+            if stripped.startswith("_atom_site."):
+                cols[stripped.split()[0][len("_atom_site."):]] = len(cols)
+                in_header, in_loop = True, False
+                continue
+            if in_header:
+                in_header, in_loop = False, True
+            if not in_loop:
+                continue
+            if not stripped or stripped.startswith("#") or stripped.startswith("_") \
+                    or stripped.startswith("loop_"):
+                break  # end of the atom loop
+            rows.append(_cif_tokens(line))
+
+    if not cols:
+        return []
+
+    def pick(*names: str) -> int:
+        for name in names:
+            if name in cols:
+                return cols[name]
+        raise ValueError(f"mmCIF _atom_site loop in {structure_path} lacks {names[0]}")
+
+    i_group = pick("group_PDB")
+    i_name = pick("auth_atom_id", "label_atom_id")
+    i_alt = pick("label_alt_id", "auth_atom_id")
+    i_comp = pick("auth_comp_id", "label_comp_id")
+    i_chain = pick("auth_asym_id", "label_asym_id")
+    i_seq = pick("auth_seq_id", "label_seq_id")
+    i_x, i_y, i_z = pick("Cartn_x"), pick("Cartn_y"), pick("Cartn_z")
+    i_model = cols.get("pdbx_PDB_model_num")
+    i_ins = cols.get("pdbx_PDB_ins_code")
+    i_occ = cols.get("occupancy")
+    i_b = cols.get("B_iso_or_equiv")
+    i_elem = cols.get("type_symbol")
+    width = max(cols.values()) + 1
+
+    def value(row: List[str], idx: Optional[int], default: str = "") -> str:
+        if idx is None or idx >= len(row):
+            return default
+        tok = row[idx]
+        return default if tok in (".", "?") else tok
+
+    first_model = None
+    atoms: List[Atom] = []
+    for row in rows:
+        if len(row) < width:
+            continue
+        model = value(row, i_model, "1")
+        if first_model is None:
+            first_model = model
+        if model != first_model:
+            continue  # first model only
+        name = row[i_name]
+        try:
+            resseq = int(row[i_seq])
+        except ValueError:
+            continue  # label_seq_id is "." for ligands
+        atoms.append(Atom(
+            hetatm=row[i_group].upper() == "HETATM",
+            name=name,
+            altloc=value(row, i_alt),
+            resname=row[i_comp].upper(),
+            chain=row[i_chain],
+            resseq=resseq,
+            icode=value(row, i_ins),
+            x=float(row[i_x]), y=float(row[i_y]), z=float(row[i_z]),
+            occupancy=float(value(row, i_occ, "1.0")),
+            bfactor=float(value(row, i_b, "0.0")),
+            element=value(row, i_elem) or name[:1],
+        ))
+    return atoms
+
+
+def read_atoms(structure_path: str) -> List[Atom]:
+    """Atom records from a .pdb/.ent or .cif/.mmcif file, first model only."""
+    suffix = Path(structure_path).suffix.lower()
+    if suffix in (".cif", ".mmcif"):
+        return _parse_cif_atoms(structure_path)
+    if suffix in (".pdb", ".ent"):
+        return _parse_pdb_atoms(structure_path)
+    # Unknown extension: sniff for the mmCIF atom loop before falling back.
+    with open(structure_path) as fh:
+        head = fh.read(200_000)
+    return (_parse_cif_atoms if "_atom_site." in head else _parse_pdb_atoms)(structure_path)
+
+
+def pdb_chain_id(chain_id: str) -> str:
+    """The single character a chain gets in the PDB we hand to ProteinMPNN.
+
+    mmCIF allows multi-character chain IDs, which do not fit the PDB column, so
+    those are renamed. Callers must use this same id in --pdb_path_chains.
+    """
+    return chain_id if len(chain_id) == 1 else "A"
+
+
+def _pdb_line(serial: int, atom: Atom, chain: str) -> str:
+    # A 1-2 letter atom name is indented by one column; a 4-letter one is not.
+    name = atom.name if len(atom.name) >= 4 else f" {atom.name:<3}"
+    return (
+        f"ATOM  {serial:5d} {name:<4}{atom.altloc[:1] or ' '}{atom.resname:>3} "
+        f"{chain}{atom.resseq:4d}{atom.icode[:1] or ' '}   "
+        f"{atom.x:8.3f}{atom.y:8.3f}{atom.z:8.3f}"
+        f"{atom.occupancy:6.2f}{atom.bfactor:6.2f}          {atom.element:>2}\n"
+    )
+
+
 def list_chains(structure_path: str) -> List[str]:
     """Chain IDs that carry CA atoms, in the order they first appear."""
     chains: List[str] = []
-    with open(structure_path) as fh:
-        for line in fh:
-            if line.startswith(("ATOM  ", "HETATM")) and line[12:16].strip() == "CA":
-                chain = line[21].strip() or "A"
-                if chain not in chains:
-                    chains.append(chain)
+    for atom in read_atoms(structure_path):
+        if atom.name == "CA" and atom.chain not in chains:
+            chains.append(atom.chain)
     return chains
 
 
@@ -59,30 +243,29 @@ def extract_chain(structure_path: str, chain_id: str, out_path: Path) -> Tuple[s
 
     Keeping one chain per structure makes the ProteinMPNN outputs unambiguous:
     every residue in the npz belongs to the designed chain, so feature rows line
-    up with sequence positions by construction.
+    up with sequence positions by construction. The output is always PDB, since
+    ProteinMPNN's own reader does not handle mmCIF.
     """
+    out_chain = pdb_chain_id(chain_id)
     kept: List[str] = []
     seq: List[str] = []
     resnums: List[int] = []
     seen = set()
-    with open(structure_path) as fh:
-        for line in fh:
-            if not line.startswith(("ATOM  ", "HETATM")):
+    for atom in read_atoms(structure_path):
+        if atom.chain != chain_id:
+            continue
+        if atom.hetatm and atom.resname != "MSE":
+            continue  # ligands/waters, but keep selenomethionine
+        if atom.altloc not in ("", "A"):
+            continue  # keep only the first altloc
+        kept.append(_pdb_line(len(kept) + 1, atom, out_chain))
+        if atom.name == "CA":
+            key = (atom.resseq, atom.icode)
+            if key in seen:
                 continue
-            if (line[21].strip() or "A") != chain_id:
-                continue
-            if line.startswith("HETATM") and line[17:20].strip() != "MSE":
-                continue  # ligands/waters, but keep selenomethionine
-            if line[16] not in (" ", "A"):
-                continue  # keep only the first altloc
-            kept.append("ATOM  " + line[6:])
-            if line[12:16].strip() == "CA":
-                key = line[22:27]  # resseq + insertion code
-                if key in seen:
-                    continue
-                seen.add(key)
-                seq.append(THREE_TO_ONE.get(line[17:20].strip().upper(), "X"))
-                resnums.append(int(line[22:26]))
+            seen.add(key)
+            seq.append(THREE_TO_ONE.get(atom.resname, "X"))
+            resnums.append(atom.resseq)
 
     if not seq:
         raise ValueError(f"Chain {chain_id!r} has no residues in {structure_path}")
@@ -153,7 +336,7 @@ def compute_structure_probs(
         out_dir = tmp_path / "out"
         _run_mpnn(root, [
             "--pdb_path", str(chain_pdb),
-            "--pdb_path_chains", chain_id,
+            "--pdb_path_chains", pdb_chain_id(chain_id),
             "--out_folder", str(out_dir),
             "--unconditional_probs_only", "1",
             "--model_name", model_name,
@@ -226,7 +409,7 @@ def score_sequences(
         out_dir = tmp_path / "out"
         _run_mpnn(root, [
             "--pdb_path", str(chain_pdb),
-            "--pdb_path_chains", chain_id,
+            "--pdb_path_chains", pdb_chain_id(chain_id),
             "--out_folder", str(out_dir),
             "--score_only", "1",
             "--path_to_fasta", str(fasta),

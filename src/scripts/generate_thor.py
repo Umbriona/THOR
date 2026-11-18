@@ -149,7 +149,10 @@ def resolve_structure(args) -> Tuple[Optional[str], Optional[str]]:
 
     chains = list_chains(args.structure)
     if not chains:
-        raise ValueError(f"No chains with CA atoms in {args.structure}")
+        raise ValueError(
+            f"No chains with CA atoms in {args.structure}. Supported formats are "
+            f"PDB (.pdb/.ent) and mmCIF (.cif/.mmcif)."
+        )
     chain_id = args.mpnn_chain or chains[0]
     if chain_id not in chains:
         raise ValueError(f"Chain {chain_id!r} not in {args.structure}; found {chains}")
