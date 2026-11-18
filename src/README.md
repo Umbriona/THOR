@@ -71,6 +71,46 @@ Positions must line up with the structure, so a `--sequence` that disagrees with
 the chain is rejected rather than silently misaligned. Structures with unresolved
 residues are reported: positions then refer to the resolved residues only.
 
+### `scripts/generate_thor_structures.py` — a FASTA plus a directory of structures
+`generate_thor.py` takes one backbone at a time, because ProteinMPNN features
+describe a single chain — so `--structure` and `--fasta` cannot be combined.
+This driver closes that gap: it runs `generate_thor.py` once per FASTA record,
+pairing each with the structure of the same name, then writes the per-run
+tables and figures plus one combined CSV.
+
+```
+python generate_thor_structures.py \
+    --run_dir RUN --fasta seqs.fasta --structure_dir structures/ \
+    --output_dir out/ --mpnn_dir ProteinMPNN --mpnn_weight 0.3 \
+    -- --replicates 10 --esm_filter_threshold 3.0
+```
+
+| Argument | |
+|---|---|
+| `--fasta` | **required.** A record id must match its structure's filename stem |
+| `--structure_dir` | structures named `<record_id>.cif`/`.pdb`/`.mmcif`/`.ent`. Omit to run ESM-only |
+| `--output_dir` | **required.** Each record gets a subdirectory; `all_variants.csv` collects them |
+| `--seq_source` | `fasta` (default) fails if sequence and chain disagree; `structure` generates from the resolved chain |
+| `--require_structure` | fail a record with no structure instead of running it ESM-only |
+| `--only`, `--dry_run`, `--no_summary` | |
+| *after `--`* | passed straight to `generate_thor.py`, so every flag it takes is available |
+
+A record with no structure runs ESM-only with a warning, and a record whose run
+fails is reported and skipped so the rest still finish — the exit status is
+non-zero if any failed. ESM is loaded once per record, about a minute each:
+fine for tens of proteins, worth rethinking for hundreds.
+
+Wrapper: `generate_thor_structures.sh` (SLURM + Singularity). It bind-mounts the
+ProteinMPNN checkout into the container, which does not contain it.
+
+### `scripts/summarise_variants.py` — tables and figures from a variant FASTA
+The Colab notebook's post-processing as a script, so a cluster run and a
+notebook run produce the same CSV columns and the same plot. Writes
+`<id>_variants.csv` and `<id>_variants.png` beside each input FASTA, and with
+`--combined` one CSV with every run stacked and keyed by `input_id`. Importable
+as `parse_variant_fasta` / `plot_variants`. Called automatically by
+`generate_thor_structures.py`.
+
 ### `scripts/generate_thor_batch.py` — generate across a whole dataset
 Dataset-scale generation from **pre-built TFRecords**, used for the large-scale
 experiments. Loads the full CycleGAN (with PID controllers) rather than the
