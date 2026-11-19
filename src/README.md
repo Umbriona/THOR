@@ -71,6 +71,21 @@ Positions must line up with the structure, so a `--sequence` that disagrees with
 the chain is rejected rather than silently misaligned. Structures with unresolved
 residues are reported: positions then refer to the resolved residues only.
 
+### `scripts/inspect_variant_scores.ipynb` — residue-level scores (prototype)
+A scratch notebook for looking at *why* a variant scored the way it did. Point it
+at a `*_thor_outputs.zip` or any output directory and, for each variant, it draws
+one figure per score (ESM, Generator, ProteinMPNN): a heatmap of the full
+distribution over the 20 residues at every position, with the residue actually
+present boxed and the wildtype residue marked, plus a track above it showing how
+much probability that residue got — a short bar under a high wildtype mark is a
+substitution the model dislikes.
+
+Rows are grouped by side-chain chemistry rather than alphabetically, and the view
+is windowed with a slider plus a jump-to-substitution control, since whole
+sequences do not fit on a screen. Needs `--store_scoring_probs` for the ESM and
+ProteinMPNN panels and `--store_softmax` for the generator panel; a missing file
+is reported and that figure skipped.
+
 ### `scripts/generate_thor_structures.py` — a FASTA plus a directory of structures
 `generate_thor.py` takes one backbone at a time, because ProteinMPNN features
 describe a single chain — so `--structure` and `--fasta` cannot be combined.
