@@ -82,9 +82,15 @@ substitution the model dislikes.
 
 Rows are grouped by side-chain chemistry rather than alphabetically, and the view
 is windowed with a slider plus a jump-to-substitution control, since whole
-sequences do not fit on a screen. Needs `--store_scoring_probs` for the ESM and
-ProteinMPNN panels and `--store_softmax` for the generator panel; a missing file
-is reported and that figure skipped.
+sequences do not fit on a screen. A **substitutions only** toggle drops every
+position that did not change, which is usually the view you want.
+
+Needs `--store_scoring_probs` for the ESM and ProteinMPNN panels and
+`--store_softmax` for the generator panel; a missing file is reported and that
+figure skipped. An optional cell recomputes the ProteinMPNN probabilities from a
+structure and writes them back into `*_scoring_probs.jsonl`, for bundles made
+before those were stored — they depend only on the backbone, so the values match
+what the run would have written.
 
 ### `scripts/generate_thor_structures.py` — a FASTA plus a directory of structures
 `generate_thor.py` takes one backbone at a time, because ProteinMPNN features

@@ -632,9 +632,15 @@ def main():
     # Structure features, computed once: they depend on the backbone, not on the
     # sequence threaded through it, so the wildtype and every variant share them.
     mpnn_probs = None
-    if args.structure and args.mpnn_weight > 0.0:
-        print(f"[info] Computing ProteinMPNN features from {args.structure} chain {chain_id} "
-              f"(blend weight {args.mpnn_weight})...")
+    # They are also the only record of what the structure said, so compute them
+    # for --store_scoring_probs even at weight 0, where nothing is blended.
+    if args.structure and (args.mpnn_weight > 0.0 or args.store_scoring_probs):
+        if args.mpnn_weight > 0.0:
+            print(f"[info] Computing ProteinMPNN features from {args.structure} chain {chain_id} "
+                  f"(blend weight {args.mpnn_weight})...")
+        else:
+            print(f"[info] --mpnn_weight is 0, so generator features stay pure ESM. Computing "
+                  f"ProteinMPNN probabilities anyway for --store_scoring_probs...")
         mpnn_probs, _ = compute_structure_probs(
             args.structure, chain_id, args.mpnn_dir,
             model_name=args.mpnn_model,
