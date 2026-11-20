@@ -6,6 +6,7 @@ generator/ESM NLL metrics, predicted OGT, and supports optional ESM-based
 filtering + argmax optimization.
 """
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -402,6 +403,11 @@ def write_scoring_probs(out_dir: Path, records: List[Dict], mpnn_probs: Optional
     and the ESM filter were computed from, plus one line for the ProteinMPNN
     backbone distribution, which is shared by every variant. Columns are in
     AA20 order.
+
+    The key is "Scoring_Model", not "model": ESM and ProteinMPNN each act in two
+    capacities here, as generator feature models and as scoring models, and this
+    file only ever holds the latter. What they contributed as features is in
+    run_metadata.json.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     prefix = f"{name_prefix}_" if name_prefix else ""
@@ -413,7 +419,7 @@ def write_scoring_probs(out_dir: Path, records: List[Dict], mpnn_probs: Optional
     with open(path, "w") as fh:
         if mpnn_probs is not None:
             fh.write(json.dumps({
-                "model": "proteinmpnn",
+                "Scoring_Model": "proteinmpnn",
                 "label": f"structure_chain_{chain_id}",
                 "aa_order": AA_ORDER,
                 "probs": trim(mpnn_probs, len(mpnn_probs)),
@@ -423,13 +429,124 @@ def write_scoring_probs(out_dir: Path, records: List[Dict], mpnn_probs: Optional
             if probs is None:
                 continue
             fh.write(json.dumps({
-                "model": "esm",
+                "Scoring_Model": "esm",
                 "label": rec["label"],
                 "kind": rec.get("kind"),
                 "aa_order": AA_ORDER,
                 "probs": trim(probs, len(rec["seq"])),
             }) + "\n")
     print(f"Wrote scoring probabilities to {path}")
+    return path
+
+
+def _git_commit(path: Path) -> Optional[str]:
+    """The checkout's commit, when this is a git clone and git is installed."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _file_digest(path: Path) -> Optional[str]:
+    """sha256 of a file, so a bundled structure can be matched to the one used."""
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _versions() -> Dict[str, str]:
+    import platform
+    out = {"python": platform.python_version()}
+    for name in ("numpy", "torch", "transformers", "tensorflow"):
+        try:
+            out[name] = __import__(name).__version__
+        except Exception:
+            pass
+    return out
+
+
+def write_run_metadata(out_dir: Path, args, chain_id: Optional[str],
+                       struct_seq: Optional[str], n_records: int) -> Path:
+    """Record every setting this run used, beside its outputs.
+
+    ESM and ProteinMPNN each appear twice, because they are used twice: once to
+    build the generator's input features and once to score what came out. The
+    two roles are listed separately so a bundle says which was which without
+    anyone having to reconstruct it from the command line.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{args.name}_" if args.name else ""
+    path = out_dir / f"{prefix}run_metadata.json"
+
+    settings = {}
+    for key, value in sorted(vars(args).items()):
+        if key == "model":  # an alias of --hf_model, set for load_fasta_with_meta
+            continue
+        settings[key] = str(value) if isinstance(value, Path) else value
+
+    meta = {
+        "written": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "thor_commit": _git_commit(Path(__file__).resolve().parent),
+        "command": [str(a) for a in sys.argv],
+        "sequences_written": n_records,
+        "feature_models": {
+            "esm": {
+                "hf_model": args.hf_model,
+                "init_mode": args.esm_init_mode,
+                "random_mask_prob": args.esm_random_mask_prob if args.esm_init_mode == "random" else None,
+                "random_seed": args.esm_random_seed if args.esm_init_mode == "random" else None,
+                "weight_in_blend": 1.0 - args.mpnn_weight if args.structure else 1.0,
+            },
+            "proteinmpnn": {
+                "used": bool(args.structure) and args.mpnn_weight > 0.0,
+                "checkpoint": args.mpnn_model,
+                "soluble_weights": args.mpnn_soluble,
+                "backbone_noise": args.mpnn_backbone_noise,
+                "weight_in_blend": args.mpnn_weight if args.structure else 0.0,
+            },
+            "generator": {
+                "run_dir": str(args.run_dir),
+                "weights": args.weights or "(latest in run_dir/weights)",
+                "temperature": args.temperature,
+                "replicates": args.replicates,
+            },
+        },
+        "scoring_models": {
+            "esm": {"hf_model": args.hf_model, "filter_threshold": args.esm_filter_threshold},
+            "proteinmpnn": {
+                "used": bool(args.structure) and not args.skip_mpnn_score,
+                "checkpoint": args.mpnn_model,
+                "seed": args.mpnn_seed,
+            },
+            "ogt": {"used": not args.skip_ogt, "config": args.ogt_config,
+                    "weights": list(args.ogt_weights) if args.ogt_weights else None},
+        },
+        "structure": None,
+        "versions": _versions(),
+        "settings": settings,
+    }
+
+    if args.structure:
+        struct = Path(args.structure)
+        meta["structure"] = {
+            "file": struct.name,
+            "path": str(struct.resolve()) if struct.exists() else str(struct),
+            "chain": chain_id,
+            "residues": len(struct_seq) if struct_seq else None,
+            "sha256": _file_digest(struct),
+        }
+
+    path.write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"Wrote run metadata to {path}")
     return path
 
 
@@ -1064,6 +1181,7 @@ def main():
     write_outputs(output_dir, records, args.store_softmax, base_softmax, mask_np, fasta_ids, args.name)
     if args.store_scoring_probs:
         write_scoring_probs(output_dir, records, mpnn_probs, chain_id, args.name)
+    write_run_metadata(output_dir, args, chain_id, struct_seq, len(records))
 
 
 if __name__ == "__main__":

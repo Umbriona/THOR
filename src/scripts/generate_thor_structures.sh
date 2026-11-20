@@ -71,7 +71,9 @@ ESM_DEVICE=${ESM_DEVICE:-cuda}           # cpu to keep ESM off the GPU
 BATCH_TOKENS=${BATCH_TOKENS:-20000}      # reduce if you hit OOM
 ESM_BF16=${ESM_BF16:---esm_bf16}         # set to "" to disable bfloat16 autocast
 STORE_SOFTMAX=${STORE_SOFTMAX:---store_softmax}        # "" to skip the JSONL
-STORE_SCORING_PROBS=${STORE_SCORING_PROBS:-}           # "--store_scoring_probs" to keep ESM/MPNN probabilities
+# On by default, as in the Colab notebook: the ProteinMPNN line is the only
+# record of what the structure said. Set to "" for smaller outputs.
+STORE_SCORING_PROBS=${STORE_SCORING_PROBS- --store_scoring_probs}
 SEQ_SOURCE=${SEQ_SOURCE:-fasta}          # "structure" to generate from the resolved chain instead
 
 ########################

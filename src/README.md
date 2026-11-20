@@ -33,6 +33,13 @@ predicted temperature), and optionally a JSONL of softmax distributions.
 | `--skip_ogt` | skip temperature prediction |
 | `--output_dir`, `--name`, `--gpu`, `--device`, `--batch_tokens` | |
 
+Every run also writes `<name>_run_metadata.json`: the full command line, every
+argument, the generator and model versions, and the structure's name, chain and
+sha256. ESM and ProteinMPNN appear twice in it, under `feature_models` and
+`scoring_models`, because each is used in both capacities — once to build the
+generator's input and once to score what came out. `*_scoring_probs.jsonl` is
+only ever the scoring side, and names its key `Scoring_Model` to say so.
+
 Wrapper: `generate_thor.sh`. Notebook: `generate_thor_colab.ipynb`.
 
 #### Structure input (optional, ProteinMPNN)
@@ -90,7 +97,11 @@ Needs `--store_scoring_probs` for the ESM and ProteinMPNN panels and
 figure skipped. An optional cell recomputes the ProteinMPNN probabilities from a
 structure and writes them back into `*_scoring_probs.jsonl`, for bundles made
 before those were stored — they depend only on the backbone, so the values match
-what the run would have written.
+what the run would have written. It defaults to the structure bundled with the
+run, so for a recent bundle there is nothing to fill in.
+
+Bundles written before the `Scoring_Model` rename, whose key is `model`, are read
+unchanged.
 
 ### `scripts/generate_thor_structures.py` — a FASTA plus a directory of structures
 `generate_thor.py` takes one backbone at a time, because ProteinMPNN features
