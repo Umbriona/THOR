@@ -80,8 +80,9 @@ residues are reported: positions then refer to the resolved residues only.
 
 ### `scripts/inspect_variant_scores.ipynb` — residue-level scores (prototype)
 The same viewer is built into `generate_thor_colab.ipynb` (section 3b), reading
-the files the run just wrote; this notebook is for looking at a bundle later,
-away from Colab. Point it at a `*_thor_outputs.zip` or any output directory and,
+the files the run just wrote; an optional cell there saves a small selection of
+the figures into the downloaded zip under `figures/`. This notebook is for
+looking at a bundle later, away from Colab. Point it at a `*_thor_outputs.zip` or any output directory and,
 for each variant, it draws
 one figure per score (ESM, Generator, ProteinMPNN): a heatmap of the full
 distribution over the 20 residues at every position, with the residue actually
