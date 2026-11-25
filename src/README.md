@@ -119,6 +119,25 @@ case that matters, a variant that looks fine because thirty harmless
 substitutions outvote three ruinous ones. So the penalty shifts as the variant
 improves:
 
+**A substitution is bad on either of two grounds**, because the ratio alone is
+not enough. It is scale-free by design, so `0.9 → 0.45` and `0.02 → 0.01` both
+read as `−0.69` although only one of them puts an implausible residue into the
+protein. A substitution therefore counts as bad under a model when it is either
+
+- **worse than the wildtype**: ratio below `--bad_llr` (default −2.0), or
+- **implausible**: less likely than the `--implausible_percentile` (default 5th)
+  percentile of that model's probabilities for the *wildtype's own residues*.
+  The wildtype is a sequence that demonstrably folds and works, so its weakest
+  positions set the bar. Across three proteins that lands at p ≈ 0.016–0.021 for
+  ESM and 0.019–0.032 for ProteinMPNN.
+
+The second ground matters most for ProteinMPNN, which ranks the wildtype residue
+seventh on average and never first — "better than wildtype" is a much lower bar
+for it than for ESM. On one run the ratio alone flagged 40 substitutions as
+rejected by both models; with the floor it flags 117, and of ProteinMPNN's own
+objections 183 are visible only to the floor and none to the ratio alone.
+
+
 ```
 m     = mean llr over substitutions, averaged across the models (nats)
 w     = 1 / (1 + exp(-m / softness))          0 when far worse than wildtype, 1 when better
@@ -145,22 +164,22 @@ python variant_ranking.py OUTPUT_DIR --top 5 --tradeoff 0.5
 | `--top` | how many of the best-scoring variants to save |
 | `--only` | save these labels instead |
 | `--tradeoff` | temperature against plausibility (default 0.5) |
-| `--bad_llr` | nats below which a substitution counts as bad (default −2.0, about sevenfold) |
+| `--bad_llr` | nats below which a substitution counts as worse than the wildtype (default −2.0, about sevenfold) |
+| `--implausible_percentile` | percentile of the wildtype's own residue probabilities below which a substitution counts as implausible (default 5) |
 | `--no_delta_t`, `--no_esm`, `--no_mpnn` | drop a signal from the ranking |
 | `--penalty_per_risk` | a fixed degrees-per-risk factor, for comparing runs on one scale |
 
 It writes three files: `<name>_ranking.csv` (per variant), `<name>_selected.fasta`
 (the chosen sequences plus the wildtype) and `<name>_substitutions.csv`, one row
 per substituted position with each model's probability for the wildtype and the
-variant residue, both log-ratios, and a `disagrees_with` column reading `ok`,
-`esm`, `proteinmpnn` or `both`. The CSVs cover every variant and carry a
+variant residue, both log-ratios, where the variant residue ranks among the 20,
+an `esm_flag`/`mpnn_flag` column reading `ok`, `worse_than_wt`, `implausible` or
+`worse+implausible`, and a `disagrees_with` column reading `ok`, `esm`,
+`proteinmpnn` or `both`. The CSVs cover every variant and carry a
 `selected` column, so a choice can be revisited without re-running anything.
 
-ProteinMPNN's scale differs from ESM's: it scores the backbone, not the
-sequence, and on these runs it puts most substitutions *above* the wildtype,
-rarely going below −2. So `both` is a strong flag — on a typical run it catches
-2–4% of substitutions — while `esm` alone catches around 10–15%. Without a
-structure there is no second model, `n_bad_both` stays 0, and the notebooks say so.
+Without a structure there is no second model, `n_bad_both` stays 0, and the
+notebooks say so.
 
 Both notebooks have this built in, with checkboxes for picking variants by hand:
 `generate_thor_colab.ipynb` section 3c, `inspect_variant_scores.ipynb` section 4.

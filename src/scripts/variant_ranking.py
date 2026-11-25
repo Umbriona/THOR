@@ -58,6 +58,11 @@ AA20 = "ACDEFGHIKLMNPQRSTVWY"
 # A substitution is "bad" under a model when it is this much less likely than
 # the wildtype residue, in nats. -2.0 is about a sevenfold drop.
 BAD_LLR = -2.0
+# ...or when the model finds the new residue less likely than this percentile of
+# the residues of the wildtype, a sequence that demonstrably works. See
+# `plausibility_floor`. Across three proteins the 5th percentile lands at
+# p = 0.016-0.021 for ESM and 0.019-0.032 for ProteinMPNN.
+IMPLAUSIBLE_PERCENTILE = 5.0
 # Both models rejecting a position is worse than one; see the module docstring.
 WEIGHT_ONE = 0.35
 # Nats of mean llr over which the penalty shifts from the average to the counts.
@@ -89,21 +94,89 @@ def _llr(probs: Optional[np.ndarray], pos: int, var_aa: str, wt_aa: str,
     return math.log(p_var) - math.log(p_wt)
 
 
+def _rank_of(probs: Optional[np.ndarray], pos: int, aa: str,
+             aa_order: str = AA20) -> Optional[int]:
+    """Where this residue comes in the model's order of preference, 1 being first."""
+    if probs is None or pos >= len(probs) or aa not in aa_order:
+        return None
+    row = np.asarray(probs[pos])
+    return int((row > row[aa_order.index(aa)]).sum()) + 1
+
+
+def plausibility_floor(probs: Optional[np.ndarray], wt_seq: str,
+                       percentile: float = IMPLAUSIBLE_PERCENTILE,
+                       aa_order: str = AA20) -> Optional[float]:
+    """The probability below which a residue counts as implausible for this model.
+
+    Taken from the model's own opinion of the wildtype, which is a protein that
+    demonstrably folds and works: the floor is the `percentile`-th percentile of
+    p(wildtype residue) over its positions. A substitution below it is one the
+    model finds less likely than all but the least likely residues of a working
+    sequence.
+
+    This is what the log-likelihood ratio cannot see. The ratio is scale-free by
+    design, so 0.9 -> 0.45 and 0.02 -> 0.01 both read as -0.69 although only one
+    of them puts an implausible residue into the protein. It also travels badly
+    between the two models: ProteinMPNN ranks the wildtype residue seventh on
+    average and never first, so "better than wildtype" is a far lower bar for it
+    than for ESM. A floor drawn from each model's own wildtype distribution puts
+    them back on comparable terms.
+    """
+    if probs is None or not wt_seq:
+        return None
+    p_wt = [_lookup(probs, i, aa, aa_order) for i, aa in enumerate(wt_seq)]
+    p_wt = [p for p in p_wt if p is not None]
+    if not p_wt:
+        return None
+    return float(np.percentile(np.asarray(p_wt), percentile))
+
+
+def _flag(llr: Optional[float], p_var: Optional[float], rank: Optional[int],
+          bad_llr: float, floor: Optional[float]) -> str:
+    """How a model objects to a substitution, if it does."""
+    if llr is None and p_var is None:
+        return "n/a"
+    worse = llr is not None and llr < bad_llr
+    implausible = floor is not None and p_var is not None and p_var < floor
+    if worse and implausible:
+        return "worse+implausible"
+    if worse:
+        return "worse_than_wt"
+    if implausible:
+        return "implausible"
+    return "ok"
+
+
 def substitution_rows(label: str, var_seq: str, wt_seq: str,
                       esm_var: Optional[np.ndarray] = None,
                       esm_wt: Optional[np.ndarray] = None,
                       mpnn: Optional[np.ndarray] = None,
                       bad_llr: float = BAD_LLR,
+                      esm_floor: Optional[float] = None,
+                      mpnn_floor: Optional[float] = None,
                       aa_order: str = AA20) -> List[Dict]:
-    """One row per substituted position, with each model's verdict on it."""
+    """One row per substituted position, with each model's verdict on it.
+
+    A model objects on either of two grounds, which catch different things: the
+    substitution is much worse than the wildtype residue (`bad_llr`), or the new
+    residue is implausible in absolute terms (`esm_floor` / `mpnn_floor`, from
+    `plausibility_floor`). Either one makes it bad under that model.
+    """
     rows = []
     for pos, (var_aa, wt_aa) in enumerate(zip(var_seq, wt_seq)):
         if var_aa == wt_aa:
             continue
         esm_llr = _llr(esm_var, pos, var_aa, wt_aa, aa_order)
         mpnn_llr = _llr(mpnn, pos, var_aa, wt_aa, aa_order)
-        bad_esm = esm_llr is not None and esm_llr < bad_llr
-        bad_mpnn = mpnn_llr is not None and mpnn_llr < bad_llr
+        p_esm_var = _lookup(esm_var, pos, var_aa, aa_order)
+        p_mpnn_var = _lookup(mpnn, pos, var_aa, aa_order)
+        esm_rank = _rank_of(esm_var, pos, var_aa, aa_order)
+        mpnn_rank = _rank_of(mpnn, pos, var_aa, aa_order)
+
+        esm_flag = _flag(esm_llr, p_esm_var, esm_rank, bad_llr, esm_floor)
+        mpnn_flag = _flag(mpnn_llr, p_mpnn_var, mpnn_rank, bad_llr, mpnn_floor)
+        bad_esm = esm_flag not in ("ok", "n/a")
+        bad_mpnn = mpnn_flag not in ("ok", "n/a")
         if bad_esm and bad_mpnn:
             verdict = "both"
         elif bad_esm:
@@ -112,22 +185,29 @@ def substitution_rows(label: str, var_seq: str, wt_seq: str,
             verdict = "proteinmpnn"
         else:
             verdict = "ok"
+
         rows.append({
             "label": label,
             "position": pos + 1,
             "wt_aa": wt_aa,
             "var_aa": var_aa,
             "substitution": f"{wt_aa}{pos + 1}{var_aa}",
-            "p_esm_var": _lookup(esm_var, pos, var_aa, aa_order),
+            "p_esm_var": p_esm_var,
             "p_esm_wt": _lookup(esm_var, pos, wt_aa, aa_order),
             "esm_llr": esm_llr,
+            "esm_rank": esm_rank,
             # The same substitution judged in the wildtype's context: a gap
             # between the two is other substitutions rescuing or spoiling it.
             "esm_llr_wt_context": _llr(esm_wt, pos, var_aa, wt_aa, aa_order),
-            "p_mpnn_var": _lookup(mpnn, pos, var_aa, aa_order),
+            "esm_flag": esm_flag,
+            "p_mpnn_var": p_mpnn_var,
             "p_mpnn_wt": _lookup(mpnn, pos, wt_aa, aa_order),
             "mpnn_llr": mpnn_llr,
+            "mpnn_rank": mpnn_rank,
+            "mpnn_flag": mpnn_flag,
             "disagrees_with": verdict,
+            "bad_esm": bad_esm,
+            "bad_mpnn": bad_mpnn,
         })
     return rows
 
@@ -150,10 +230,11 @@ def variant_metrics(rows: Sequence[Dict], delta_t: Optional[float],
     means = [float(np.mean(v)) for v in (esm, mpnn) if v]
     m = float(np.mean(means)) if means else 0.0
 
+    # The rows already carry each model's verdict, so the rule lives in one place.
     n_bad_both = n_bad_one = 0
     for r in rows:
-        bad_esm = use_esm and r["esm_llr"] is not None and r["esm_llr"] < BAD_LLR
-        bad_mpnn = use_mpnn and r["mpnn_llr"] is not None and r["mpnn_llr"] < BAD_LLR
+        bad_esm = use_esm and r["bad_esm"]
+        bad_mpnn = use_mpnn and r["bad_mpnn"]
         if bad_esm and bad_mpnn:
             n_bad_both += 1
         elif bad_esm or bad_mpnn:
@@ -174,9 +255,13 @@ def variant_metrics(rows: Sequence[Dict], delta_t: Optional[float],
         "mean_llr": m if means else None,
         "n_bad_both": n_bad_both,
         "n_bad_one": n_bad_one,
-        "worst_substitution": min(
+        "worst_llr_substitution": min(
             (r for r in rows if r["esm_llr"] is not None or r["mpnn_llr"] is not None),
             key=lambda r: min(x for x in (r["esm_llr"], r["mpnn_llr"]) if x is not None),
+            default={"substitution": None})["substitution"],
+        "least_plausible_substitution": min(
+            (r for r in rows if r["p_esm_var"] is not None or r["p_mpnn_var"] is not None),
+            key=lambda r: max(x for x in (r["p_esm_var"], r["p_mpnn_var"]) if x is not None),
             default={"substitution": None})["substitution"],
         "count_weight": round(w, 4),
         "risk": round(risk, 4),
@@ -217,21 +302,35 @@ def rank(by_label: Dict[str, Dict], wt_seq: str, wt_label: str,
          esm: Dict[str, np.ndarray], mpnn: Optional[np.ndarray],
          delta_t: Dict[str, Optional[float]],
          tradeoff: float = TRADEOFF, penalty_per_risk: Optional[float] = None,
-         bad_llr: float = BAD_LLR, **kwargs):
-    """Metrics and substitution rows for every variant, best score first."""
+         bad_llr: float = BAD_LLR,
+         implausible_percentile: float = IMPLAUSIBLE_PERCENTILE,
+         esm_floor: Optional[float] = None, mpnn_floor: Optional[float] = None,
+         **kwargs):
+    """Metrics and substitution rows for every variant, best score first.
+
+    The plausibility floors are drawn once from the wildtype, so every variant
+    is judged against the same standard.
+    """
     sub_rows, metrics = [], []
     esm_wt = esm.get(wt_label)
+    if esm_floor is None:
+        esm_floor = plausibility_floor(esm_wt, wt_seq, implausible_percentile)
+    if mpnn_floor is None:
+        mpnn_floor = plausibility_floor(mpnn, wt_seq, implausible_percentile)
     for label, rec in by_label.items():
         if label == wt_label:
             continue
         rows = substitution_rows(label, rec["seq"], wt_seq, esm.get(label), esm_wt, mpnn,
-                                 bad_llr=bad_llr)
+                                 bad_llr=bad_llr,
+                                 esm_floor=esm_floor, mpnn_floor=mpnn_floor)
         sub_rows.extend(rows)
         metrics.append({"label": label, **variant_metrics(rows, delta_t.get(label), **kwargs)})
     score_metrics(metrics, tradeoff=tradeoff, penalty_per_risk=penalty_per_risk)
     metrics.sort(key=lambda d: d["score"], reverse=True)
     for i, d in enumerate(metrics, 1):
         d["rank"] = i
+        d["esm_floor"] = None if esm_floor is None else round(esm_floor, 6)
+        d["mpnn_floor"] = None if mpnn_floor is None else round(mpnn_floor, 6)
     return metrics, sub_rows
 
 
@@ -361,6 +460,9 @@ def main():
                         help="Save these labels instead of the top-scoring ones")
     parser.add_argument("--bad_llr", type=float, default=BAD_LLR,
                         help="Log-likelihood ratio below which a substitution counts as bad")
+    parser.add_argument("--implausible_percentile", type=float, default=IMPLAUSIBLE_PERCENTILE,
+                        help="A substitution is also bad when the model finds it less likely "
+                             "than this percentile of the wildtype's own residues")
     parser.add_argument("--tradeoff", type=float, default=TRADEOFF,
                         help="How much of the run's temperature spread its risk spread is worth: "
                              "0 ranks on temperature alone, 1 weighs them equally")
@@ -377,7 +479,8 @@ def main():
     by_label = {r["label"]: r for r in records}
     metrics, sub_rows = rank(
         by_label, wt["seq"], wt["label"], esm, mpnn, delta_t,
-        bad_llr=args.bad_llr, tradeoff=args.tradeoff,
+        bad_llr=args.bad_llr, implausible_percentile=args.implausible_percentile,
+        tradeoff=args.tradeoff,
         penalty_per_risk=args.penalty_per_risk, softness=args.softness,
         use_delta_t=not args.no_delta_t, use_esm=not args.no_esm, use_mpnn=not args.no_mpnn)
 
