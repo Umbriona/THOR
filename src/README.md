@@ -106,6 +106,65 @@ run, so for a recent bundle there is nothing to fill in.
 Bundles written before the `Scoring_Model` rename, whose key is `model`, are read
 unchanged.
 
+### `scripts/variant_ranking.py` — which variants to keep, and why
+Generation gives you more variants than you want to order. This ranks them on
+the three things a run measures: the predicted temperature shift, and how
+plausible ESM and ProteinMPNN find the residues that were put in.
+
+Each substituted position gets a log-likelihood ratio against the wildtype
+residue, `log p(variant) - log p(wildtype)`, under each model. Negative means the
+model would rather have kept the wildtype. The mean over a variant's
+substitutions says whether it beats the wildtype overall — but a mean hides the
+case that matters, a variant that looks fine because thirty harmless
+substitutions outvote three ruinous ones. So the penalty shifts as the variant
+improves:
+
+```
+m     = mean llr over substitutions, averaged across the models (nats)
+w     = 1 / (1 + exp(-m / softness))          0 when far worse than wildtype, 1 when better
+risk  = (1 - w) * max(0, -m)  +  w * (n_bad_both + 0.35 * n_bad_one)
+score = delta_T - penalty * risk
+```
+
+While the variant is worse than the wildtype on average the average is the
+complaint; once it reaches parity the count of individually bad positions takes
+over, and positions *both* models reject count hardest.
+
+`penalty` is not a constant. Predicted shifts range over tens of degrees while
+risk ranges over a handful of substitutions, so a fixed factor would let one term
+decide the ranking by itself. It is set from the run's own spread in each via
+`--tradeoff`: the share of the temperature spread that the whole risk spread is
+worth. `0` ranks on temperature alone, `1` weighs the two equally.
+
+```
+python variant_ranking.py OUTPUT_DIR --top 5 --tradeoff 0.5
+```
+
+| Argument | |
+|---|---|
+| `--top` | how many of the best-scoring variants to save |
+| `--only` | save these labels instead |
+| `--tradeoff` | temperature against plausibility (default 0.5) |
+| `--bad_llr` | nats below which a substitution counts as bad (default −2.0, about sevenfold) |
+| `--no_delta_t`, `--no_esm`, `--no_mpnn` | drop a signal from the ranking |
+| `--penalty_per_risk` | a fixed degrees-per-risk factor, for comparing runs on one scale |
+
+It writes three files: `<name>_ranking.csv` (per variant), `<name>_selected.fasta`
+(the chosen sequences plus the wildtype) and `<name>_substitutions.csv`, one row
+per substituted position with each model's probability for the wildtype and the
+variant residue, both log-ratios, and a `disagrees_with` column reading `ok`,
+`esm`, `proteinmpnn` or `both`. The CSVs cover every variant and carry a
+`selected` column, so a choice can be revisited without re-running anything.
+
+ProteinMPNN's scale differs from ESM's: it scores the backbone, not the
+sequence, and on these runs it puts most substitutions *above* the wildtype,
+rarely going below −2. So `both` is a strong flag — on a typical run it catches
+2–4% of substitutions — while `esm` alone catches around 10–15%. Without a
+structure there is no second model, `n_bad_both` stays 0, and the notebooks say so.
+
+Both notebooks have this built in, with checkboxes for picking variants by hand:
+`generate_thor_colab.ipynb` section 3c, `inspect_variant_scores.ipynb` section 4.
+
 ### `scripts/generate_thor_structures.py` — a FASTA plus a directory of structures
 `generate_thor.py` takes one backbone at a time, because ProteinMPNN features
 describe a single chain — so `--structure` and `--fasta` cannot be combined.
