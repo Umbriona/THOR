@@ -184,6 +184,68 @@ notebooks say so.
 Both notebooks have this built in, with checkboxes for picking variants by hand:
 `generate_thor_colab.ipynb` section 3c, `inspect_variant_scores.ipynb` section 4.
 
+### `scripts/repair_variants.py` — fix the positions both models reject
+
+The risk term counts hardest the positions ESM *and* ProteinMPNN object to:
+residues with no support from the sequence side or the structure side. There are
+usually only a handful of them in an otherwise good variant, so this changes
+just those and leaves the rest alone.
+
+Two rules for what to put there. `model_best` takes the residue the two models
+jointly like best at that position, scored as the mean of their
+log-probabilities over all 20; the wildtype residue is among the candidates, so
+this reverts wherever reverting is what the models want. `wildtype` always
+reverts, which is what `generate_thor.py --esm_filter_threshold` already does on
+ESM alone.
+
+The candidate is chosen from the probabilities of the *unrepaired* sequence, so
+it is a proposal: changing a residue changes the context its neighbours are
+judged in. Each repaired sequence is therefore run through ESM and the
+temperature predictor again and ranked beside its parent — the comparison, not
+the proposal, says whether the repair helped. ProteinMPNN is not re-run, because
+its probabilities belong to the backbone rather than to the sequence threaded
+through it, so one matrix scores parent and repair alike.
+
+```
+python repair_variants.py OUTPUT_DIR --scope top --top 5 \
+    --ogt_config config/Classifier/config_classifier1.yaml \
+    --ogt_weights m1.h5 m2.h5 m3.h5
+```
+
+| Argument | |
+|---|---|
+| `--scope` | `none`, `top` (the best `--top` by score) or `all` |
+| `--labels` | repair these labels instead of choosing by scope |
+| `--mode` | `model_best` (default) or `wildtype` |
+| `--bad_llr`, `--implausible_percentile`, `--tradeoff` | as in `variant_ranking.py`, so the flagged positions match what the notebooks show |
+| ESM and OGT flags | the same names as `generate_thor.py` |
+
+It writes `<name>_repaired.fasta`, `<name>_repaired_scoring_probs.jsonl` (ESM
+distributions for the repaired sequences, under the same `_scoring_probs.jsonl`
+suffix so a bundle reader picks them up with the originals), `<name>_repairs.csv`
+(one row per position changed) and `<name>_repair_comparison.csv` (each repair
+beside its parent). Without a structure nothing can be rejected by both models,
+and it falls back to ESM's own objections, saying so.
+
+Colab notebook section 3d, with a `none` / `selected` / `all` choice — the
+re-scoring is the slow part, roughly one scoring pass per sequence.
+
+### `scripts/variant_plots.py` — the two scoring figures
+
+`substitution_plane(rows, label, ...)` draws one variant's substitutions as
+p(wildtype residue) against p(substituted residue) on log axes, one panel per
+model. In that plane the log-likelihood ratio is a diagonal and the plausibility
+floor is a horizontal, so the two grounds for rejecting a substitution are two
+different cuts and the gap between them is visible. Positions both models reject
+are ringed. `save_planes` writes one per label.
+
+`score_overview(metrics, ...)` draws the whole run instead: the crossfade on the
+left, and on the right the temperature-against-risk plane, where equal score is
+a line of slope lambda and the selection is a cut parallel to those lines.
+
+Colab notebook section 3e. The slide versions of the same two figures, with the
+equations, are `figures/plot_scoring_explainer.py`, which is standalone.
+
 ### `scripts/generate_thor_structures.py` — a FASTA plus a directory of structures
 `generate_thor.py` takes one backbone at a time, because ProteinMPNN features
 describe a single chain — so `--structure` and `--fasta` cannot be combined.
