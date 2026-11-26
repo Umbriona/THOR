@@ -91,3 +91,8 @@ src/scripts/data/log/
 *.tar.gz
 *.zip
 *.7z
+
+# Rendered figures; figures/plot_scoring_explainer.py regenerates them
+figures/*.png
+figures/*.pdf
+figures/*.svg
